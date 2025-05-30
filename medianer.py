@@ -1,0 +1,110 @@
+import astropy.io.fits as pyfits
+import astropy.time as Time
+import os
+import numpy
+import time
+from astropy.visualization import hist
+import matplotlib.pyplot as plt
+
+##################################################################
+def medianer(dir_name, list_name, out_name):
+    _data = []
+    file_list = []
+    _time = []
+    JD1 = []
+    JD2 = []
+    JD3 = []
+
+    ##collect data and time
+    with open(list_name, 'r') as f:
+        for line in f:
+            name = line.strip()
+            _data.append(pyfits.getdata(name))
+            prihdr = pyfits.getheader(name)
+            file_list.append(name.split(os.sep)[-1])
+            try:
+                _time.append(time.mktime(time.strptime(prihdr['DATE-OBS'], "%Y-%m-%dT%H:%M:%S.%f")))
+            except:
+                _time.append(time.mktime(time.strptime(prihdr['DATE-OBS']+'.0', "%Y-%m-%dT%H:%M:%S.%f")))
+            tm = Time.Time(prihdr['DATE-OBS'])
+            JD1.append(tm.jd)
+            JD2.append(tm.jd + prihdr['EXPTIME']/2./86400.)
+            JD3.append(tm.mjd + prihdr['EXPTIME']/2./86400.)
+    f.close()
+
+    ##mean time
+    _time = numpy.mean(_time)
+    mean_time = time.strftime('%Y-%m-%dT%H:%M:%S.000', time.localtime(_time))
+    JD1 = numpy.mean(JD1)
+    JD2 = numpy.mean(JD2)
+    JD3 = numpy.mean(JD3)
+    ##median data
+    _data=numpy.asarray(_data)
+    if str(out_name).find('ordim') != -1:
+        out = numpy.mean(_data, 0)
+    else:
+        out = numpy.median(_data, 0)
+    out = numpy.float32(out)
+
+    if out_name == 's_bias.fits':
+        RN = []
+        for ii in range(0,_data.shape[0]):
+            xxx = (numpy.std(_data[int(ii), int(_data.shape[1]/2-10):int(_data.shape[1]/2+10), int(_data.shape[2]/2-10):int(_data.shape[2]/2+10)]))
+            RN.append(xxx)
+        RN =numpy.asarray(RN)
+        ReadNoise = numpy.median(RN)
+        hist(out.squeeze().flatten(), bins='blocks') # IY
+        plt.xlabel('Pixel value')
+        plt.ylabel('Number of pixels')
+        plt.semilogy()
+        plt.show()
+
+
+
+    mean = numpy.mean(out)
+    median = numpy.median(out)
+    stdv = numpy.std(out)
+
+    prihdr['DATE-OBS'] = (mean_time, 'mean time of combined files')
+    prihdr['JD-OBS']  	= (JD1, 'JD of start of exposure')
+    prihdr['JDMIDDLE']	= (JD2, 'JD of middle of exposure')
+    prihdr['MJD-OBS'] 	= (JD3, 'MJD of start of exposure')
+    prihdr['DATAMAX'] = (numpy.max(out), 'Max pixel value')
+    prihdr['DATAMIN'] = (numpy.min(out), 'Min pixel value')
+    prihdr['DATAMEAN'] = (mean, 'Mean value')
+
+    if out_name == 's_bias.fits':
+        ReadNoise = round(ReadNoise*prihdr['GAIN'],2)
+        prihdr['RDNOISE'] = (ReadNoise, 'measured read noise (e)')
+
+    prihdr['HISTORY'] = 'median combined: '+ str(_data.shape[0])
+
+    hdu = pyfits.PrimaryHDU(out, prihdr)
+    hdulist = pyfits.HDUList([hdu])
+#    hdulist.writeto(dir_name.joinpath(out_name), overwrite = True) #ES
+    hdulist.writeto(out_name, overwrite = True)
+
+    # if out_name == 's_bias.fits' or out_name == 's_flat.fits':
+    #     with open(list_name, 'r') as f:
+    #         for line in f:
+    #             name = line.strip()
+    #             try:
+    #                 os.remove(name)
+    #             except IOError:
+    #                 print(f"Can't delete file: {name}")
+    #     f.close()
+    #     os.remove(list_name)
+
+    return(mean, median, stdv)
+
+if __name__ == '__main__':
+    from pathlib import Path
+    
+    # Directory containing the lists (created by lister.py)
+    temp_directory = Path('./TEMP')
+    data_directory = Path('.')
+    
+    # Input list (object frames from lister.py)
+    input_list = 'flat_list.txt'
+    sbias_data = medianer(data_directory, temp_directory.joinpath('flat_list.txt'), 's_flat.fits')
+    print(f"Super bias statistic: Mean = {sbias_data[0]:.2f} Median = {sbias_data[1]:.2f} Sigma = {sbias_data[2]:.2f}\n ==============")
