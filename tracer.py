@@ -12,6 +12,9 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
+from matplotlib.colors import ListedColormap
+import seaborn as sns
+
 from sklearn.cluster import AgglomerativeClustering
 from skimage.exposure import equalize_hist
 
@@ -62,8 +65,10 @@ def order_tracer(dir_name, file_name, X_half_width, step, min_height, aperture, 
     ord_mask = ones.T
     try:
         model = AgglomerativeClustering(n_clusters=14,metric='euclidean',
-                                        linkage='ward',
-                                        compute_full_tree=False)#distance_threshold=None
+                                        linkage='single',
+                                        compute_full_tree=False,
+                                        #distance_threshold=None
+        )
         
         model.fit(ord_mask)
         labels = model.labels_
@@ -74,6 +79,8 @@ def order_tracer(dir_name, file_name, X_half_width, step, min_height, aperture, 
     
     n_clusters = len(np.unique(labels))
     print(f"Agglomerative clustering created {n_clusters} clusters")
+    plot_cluster_maps(ordim, ord_mask, labels, n_clusters, trace_im,   # Plot cluster maps
+                     save_plots=True, output_dir="./cluster_analysis")
 
  #   order_tab = [] # output table of traces
     width_tab = [] # output table of sizes
@@ -98,7 +105,7 @@ def order_tracer(dir_name, file_name, X_half_width, step, min_height, aperture, 
         print(f"  Y mean: {np.mean(y_coords):.1f}, Y std: {np.std(y_coords):.1f}")
 
         x_span = np.max(x_coords) - np.min(x_coords)
-        min_x_span = nx * 0.7  # Require order to span at least 70% of detector
+        min_x_span = nx * 0.95  # Require order to span at least 70% of detector
 
 
         if len(x_coords) >= min_points_required and x_span >= min_x_span:
@@ -172,8 +179,8 @@ def order_tracer(dir_name, file_name, X_half_width, step, min_height, aperture, 
                                                )
                         fwhm = 2 * popt[1] * np.sqrt(2**(1/popt[2]) - 1)
 
-                        if (np.isinfinite(fwhm) and 1 < fwhm < 15 and
-                            np.all(np.isinfinite(popt)) and np.sqrt(np.diag(pcov))[4] < 2): # Check center uncertainty
+                        if (np.isfinite(fwhm) and 1 < fwhm < 15 and
+                            np.all(np.isfinite(popt)) and np.sqrt(np.diag(pcov))[4] < 2): # Check center uncertainty
 
                             xfit.append(x)
                             centr.append(popt[4]+yc)
@@ -205,7 +212,7 @@ def order_tracer(dir_name, file_name, X_half_width, step, min_height, aperture, 
                 coef_width = chebfit(xfit, width, poly_order)
                 ## Check the limits of the orders
                 if adaptive:
-                    width = chebval(x_coord, coef_width)
+                    width_arr = chebval(x_coord, coef_width)
                     width_arr = np.clip(width_arr, med_fwhm * 0.5, med_fwhm * 2.0) # clip unreasonable width (re-check the line)
                 else:
                     width_arr = np.full(nx, med_fwhm)
@@ -229,7 +236,7 @@ def order_tracer(dir_name, file_name, X_half_width, step, min_height, aperture, 
                 # else:
                 #     width_tab.append(width)
                 #     orders.append(coef_center)
-            except np.Linalg.LinAlgError:
+            except np.linalg.LinAlgError:
                 print(f"Final fitting failed for order {i}")
                 continue
 
@@ -265,6 +272,306 @@ def order_tracer(dir_name, file_name, X_half_width, step, min_height, aperture, 
 
     return None
 
+def plot_cluster_maps(ordim, ord_mask, labels, n_clusters, trace_im=None, save_plots=False, output_dir=None):
+    """
+    Create comprehensive visualizations of detected clusters on the spectral image.
+    
+    Parameters:
+    -----------
+    ordim : numpy.ndarray
+        Original image data
+    ord_mask : numpy.ndarray
+        Array of detected points [y, x] coordinates
+    labels : numpy.ndarray
+        Cluster labels from AgglomerativeClustering
+    n_clusters : int
+        Number of clusters
+    trace_im : numpy.ndarray, optional
+        Binary trace image
+    save_plots : bool
+        Whether to save plots to files
+    output_dir : str or Path
+        Directory to save plots
+    """
+    
+    # Create figure with multiple subplots
+    fig = plt.figure(figsize=(20, 12))
+    
+    # Plot 1: Original image with cluster overlay
+    ax1 = plt.subplot(2, 3, 1)
+    
+    # Show original image
+    vmin, vmax = np.percentile(ordim, [1, 99])
+    im1 = ax1.imshow(ordim, aspect='auto', cmap='gray', vmin=vmin, vmax=vmax, 
+                     origin='lower', alpha=0.8)
+    
+    # Overlay clusters with different colors
+    colors = plt.cm.tab20(np.linspace(0, 1, n_clusters))
+    
+    for i in range(n_clusters):
+        cluster_mask = labels == i
+        cluster_points = ord_mask[cluster_mask]
+        if len(cluster_points) > 0:
+            ax1.scatter(cluster_points[:, 1], cluster_points[:, 0], 
+                       c=[colors[i]], label=f'Order {i}', alpha=0.8, s=2)
+    
+    ax1.set_xlabel('X pixel (dispersion)')
+    ax1.set_ylabel('Y pixel (spatial)')
+    ax1.set_title('Original Image + Detected Clusters')
+    plt.colorbar(im1, ax=ax1, shrink=0.8)
+    
+    # Plot 2: Clusters only (clean view)
+    ax2 = plt.subplot(2, 3, 2)
+    
+    # Create empty image for cluster map
+    cluster_map = np.zeros_like(ordim)
+    
+    for i in range(n_clusters):
+        cluster_mask = labels == i
+        cluster_points = ord_mask[cluster_mask]
+        if len(cluster_points) > 0:
+            cluster_map[cluster_points[:, 0], cluster_points[:, 1]] = i + 1
+    
+    # Create custom colormap
+    cluster_colors = ['black'] + [plt.cm.tab20(i/n_clusters) for i in range(n_clusters)]
+    custom_cmap = ListedColormap(cluster_colors)
+    
+    im2 = ax2.imshow(cluster_map, aspect='auto', cmap=custom_cmap, 
+                     vmin=0, vmax=n_clusters, origin='lower')
+    
+    ax2.set_xlabel('X pixel (dispersion)')
+    ax2.set_ylabel('Y pixel (spatial)')
+    ax2.set_title('Cluster Map')
+    
+    # Custom colorbar with cluster labels
+    cbar2 = plt.colorbar(im2, ax=ax2, shrink=0.8)
+    cbar2.set_ticks(np.arange(n_clusters + 1))
+    cbar2.set_ticklabels(['Background'] + [f'Cluster {i}' for i in range(n_clusters)])
+    
+    # Plot 3: Individual cluster traces
+    ax3 = plt.subplot(2, 3, 3)
+    
+    # Plot each cluster as a separate trace
+    for i in range(n_clusters):
+        cluster_mask = labels == i
+        cluster_points = ord_mask[cluster_mask]
+        if len(cluster_points) > 0:
+            # Sort by x coordinate for better line plotting
+            sort_idx = np.argsort(cluster_points[:, 1])
+            x_sorted = cluster_points[sort_idx, 1]
+            y_sorted = cluster_points[sort_idx, 0]
+            
+            ax3.plot(x_sorted, y_sorted, 'o-', color=colors[i], 
+                    label=f'Order {i}', markersize=3, linewidth=1, alpha=0.7)
+    
+    ax3.set_xlabel('X pixel (dispersion)')
+    ax3.set_ylabel('Y pixel (spatial)')
+    ax3.set_title('Individual Order Traces')
+    ax3.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+    ax3.grid(True, alpha=0.3)
+    
+    # Plot 4: Cross-section at detector center
+    ax4 = plt.subplot(2, 3, 4)
+    
+    center_x = ordim.shape[1] // 2
+    x_window = 20  # Average over ±20 pixels
+    
+    # Extract cross-section
+    cross_section = np.median(ordim[:, center_x-x_window:center_x+x_window], axis=1)
+    y_coords = np.arange(len(cross_section))
+    
+    ax4.plot(cross_section, y_coords, 'b-', linewidth=1, label='Data')
+    
+    # Mark cluster positions at this x location
+    for i in range(n_clusters):
+        cluster_mask = labels == i
+        cluster_points = ord_mask[cluster_mask]
+        if len(cluster_points) > 0:
+            # Find points near center_x
+            x_coords = cluster_points[:, 1]
+            y_coords_cluster = cluster_points[:, 0]
+            
+            near_center = np.abs(x_coords - center_x) < x_window * 2
+            if np.any(near_center):
+                y_mean = np.mean(y_coords_cluster[near_center])
+                ax4.axhline(y=y_mean, color=colors[i], linestyle='--', 
+                           alpha=0.8, linewidth=2, label=f'Order {i}')
+    
+    ax4.set_xlabel('Intensity')
+    ax4.set_ylabel('Y pixel (spatial)')
+    ax4.set_title(f'Cross-section at X={center_x}±{x_window}')
+    ax4.legend(fontsize=8)
+    ax4.grid(True, alpha=0.3)
+    
+    # Plot 5: Cluster statistics
+    ax5 = plt.subplot(2, 3, 5)
+    
+    cluster_stats = []
+    for i in range(n_clusters):
+        cluster_mask = labels == i
+        cluster_points = ord_mask[cluster_mask]
+        if len(cluster_points) > 0:
+            stats = {
+                'cluster': i,
+                'n_points': len(cluster_points),
+                'x_span': np.max(cluster_points[:, 1]) - np.min(cluster_points[:, 1]),
+                'y_mean': np.mean(cluster_points[:, 0]),
+                'y_std': np.std(cluster_points[:, 0])
+            }
+            cluster_stats.append(stats)
+    
+    # Bar plot of cluster statistics
+    if cluster_stats:
+        clusters = [s['cluster'] for s in cluster_stats]
+        n_points = [s['n_points'] for s in cluster_stats]
+        x_spans = [s['x_span'] for s in cluster_stats]
+        
+        ax5_twin = ax5.twinx()
+        
+        bars1 = ax5.bar([c - 0.2 for c in clusters], n_points, width=0.4, 
+                       alpha=0.7, label='N points', color='skyblue')
+        bars2 = ax5_twin.bar([c + 0.2 for c in clusters], x_spans, width=0.4, 
+                            alpha=0.7, label='X span', color='lightcoral')
+        
+        ax5.set_xlabel('Cluster Number')
+        ax5.set_ylabel('Number of Points', color='skyblue')
+        ax5_twin.set_ylabel('X Span (pixels)', color='lightcoral')
+        ax5.set_title('Cluster Statistics')
+        ax5.set_xticks(clusters)
+        
+        # Add value labels on bars
+        for bar, val in zip(bars1, n_points):
+            ax5.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(n_points)*0.01,
+                    f'{val}', ha='center', va='bottom', fontsize=8)
+        
+        for bar, val in zip(bars2, x_spans):
+            ax5_twin.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(x_spans)*0.01,
+                         f'{val:.0f}', ha='center', va='bottom', fontsize=8)
+    
+    # Plot 6: Y position vs cluster number
+    ax6 = plt.subplot(2, 3, 6)
+    
+    if cluster_stats:
+        y_means = [s['y_mean'] for s in cluster_stats]
+        y_stds = [s['y_std'] for s in cluster_stats]
+        
+        ax6.errorbar(clusters, y_means, yerr=y_stds, fmt='o-', 
+                    capsize=5, capthick=2, linewidth=2, markersize=8)
+        
+        ax6.set_xlabel('Cluster Number')
+        ax6.set_ylabel('Y Position (pixels)')
+        ax6.set_title('Order Positions')
+        ax6.grid(True, alpha=0.3)
+        ax6.set_xticks(clusters)
+        
+        # Add value labels
+        for i, (y_mean, y_std) in enumerate(zip(y_means, y_stds)):
+            ax6.text(clusters[i], y_mean + y_std + max(y_means)*0.02, 
+                    f'{y_mean:.1f}±{y_std:.1f}', ha='center', va='bottom', fontsize=8)
+    
+    plt.tight_layout()
+    
+    if save_plots and output_dir:
+        from pathlib import Path
+        output_dir = Path(output_dir)
+        output_dir.mkdir(exist_ok=True, parents=True)
+        plt.savefig(output_dir / 'cluster_analysis.png', dpi=300, bbox_inches='tight')
+        print(f"Cluster analysis plot saved to {output_dir / 'cluster_analysis.png'}")
+    
+    plt.show()
+    
+    # Additional detailed plot for each cluster
+    plot_individual_clusters(ordim, ord_mask, labels, n_clusters, save_plots, output_dir)
+
+def plot_individual_clusters(ordim, ord_mask, labels, n_clusters, save_plots=False, output_dir=None):
+    """
+    Create detailed plots for each individual cluster.
+    """
+    
+    # Calculate grid dimensions
+    ncols = min(4, n_clusters)
+    nrows = int(np.ceil(n_clusters / ncols))
+    
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5*ncols, 4*nrows))
+    if nrows == 1:
+        axes = axes.reshape(1, -1)
+    elif ncols == 1:
+        axes = axes.reshape(-1, 1)
+    
+    colors = plt.cm.tab20(np.linspace(0, 1, n_clusters))
+    
+    for i in range(n_clusters):
+        row = i // ncols
+        col = i % ncols
+        ax = axes[row, col]
+        
+        # Show zoomed region around this cluster
+        cluster_mask = labels == i
+        cluster_points = ord_mask[cluster_mask]
+        
+        if len(cluster_points) > 0:
+            # Define zoom region
+            x_coords = cluster_points[:, 1]
+            y_coords = cluster_points[:, 0]
+            
+            x_min = max(0, np.min(x_coords) - 50)
+            x_max = min(ordim.shape[1], np.max(x_coords) + 50)
+            y_min = max(0, np.min(y_coords) - 20)
+            y_max = min(ordim.shape[0], np.max(y_coords) + 20)
+            
+            # Extract and show zoomed image
+            zoom_img = ordim[y_min:y_max, x_min:x_max]
+            vmin, vmax = np.percentile(zoom_img, [5, 95])
+            
+            im = ax.imshow(zoom_img, aspect='auto', cmap='gray', 
+                          vmin=vmin, vmax=vmax, origin='lower',
+                          extent=[x_min, x_max, y_min, y_max])
+            
+            # Overlay cluster points
+            ax.scatter(x_coords, y_coords, c=[colors[i]], s=10, alpha=0.8, edgecolor='white', linewidth=0.5)
+            
+            # Fit and overlay polynomial if possible
+            try:
+                if len(set(x_coords)) >= 3:  # Need at least 3 unique x values
+                    sort_idx = np.argsort(x_coords)
+                    x_sorted = x_coords[sort_idx]
+                    y_sorted = y_coords[sort_idx]
+                    
+                    # Simple polynomial fit for visualization
+                    poly_coef = np.polyfit(x_sorted, y_sorted, min(2, len(x_sorted)-1))
+                    x_fit = np.linspace(x_min, x_max, 100)
+                    y_fit = np.polyval(poly_coef, x_fit)
+                    
+                    ax.plot(x_fit, y_fit, 'r-', linewidth=2, alpha=0.8, label='Poly fit')
+            except:
+                pass
+            
+            ax.set_xlabel('X pixel')
+            ax.set_ylabel('Y pixel')
+            ax.set_title(f'Cluster {i} ({len(cluster_points)} points)')
+            
+        else:
+            ax.text(0.5, 0.5, f'Cluster {i}\nNo points', 
+                   ha='center', va='center', transform=ax.transAxes)
+            ax.set_xticks([])
+            ax.set_yticks([])
+    
+    # Hide empty subplots
+    for i in range(n_clusters, nrows * ncols):
+        row = i // ncols
+        col = i % ncols
+        axes[row, col].set_visible(False)
+    
+    plt.tight_layout()
+    
+    if save_plots and output_dir:
+        from pathlib import Path
+        output_dir = Path(output_dir)
+        plt.savefig(output_dir / 'individual_clusters.png', dpi=300, bbox_inches='tight')
+        print(f"Individual clusters plot saved to {output_dir / 'individual_clusters.png'}")
+    
+    plt.show()
+
 if __name__ == '__main__':
     from pathlib import Path
     
@@ -275,7 +582,7 @@ if __name__ == '__main__':
     # Parameters for order tracing
     params = {
         'file_name': 's_flat.fits',      # Median flat file
-        'X_half_width': 15,              # Half width for order detection
+        'X_half_width': 10,              # Half width for order detection
         'step': 50,                      # Step size for tracing
         'min_height': 10,               # Minimum peak height
         'aperture': 2.0,                 # Aperture size in FWHM units
