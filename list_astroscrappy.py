@@ -23,7 +23,6 @@ def list_cosmo_cleaner(dir_name, list_name, out_list_name, mask_list_name, plot=
             with pyfits.open(name) as hdul:
                 print(f'Scrapping {name}')
                 data = hdul[0].data.squeeze()
-                print(f'Squeezed data has {data.shape} dimensions')
                 header = hdul[0].header
                 mask, cleaned_data = detect_cosmics(data, readnoise=rdn, gain=gf,**kwargs)
                 pyfits.writeto(out_name, cleaned_data, header, overwrite=True)
