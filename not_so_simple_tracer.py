@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from numpy.polynomial.chebyshev import chebfit, chebval
 from scipy.ndimage import gaussian_filter1d
 import warnings
+from astropy.visualization import ZScaleInterval
 
 #==== My functions ====
 def gaussian(x, amplitude, center, sigma, offset):
@@ -64,7 +65,7 @@ def fit_gaussian(x, y, initial_guess=None):
         warnings.warn(f"Gaussian fitting failed: {e}")
         return initial_guess, None, gaussian_pisk(x, *initial_guess)
 
-def estimate_width_getxwd(profile, y_positions, gauss=True, pixels=True, pkfrac=0.9):
+def estimate_width_getxwd(profile, y_positions, gauss=True, pixels=True):
     """
     Случай для одного порядка (getxwd lines 62--100)
 
@@ -94,8 +95,8 @@ def estimate_width_getxwd(profile, y_positions, gauss=True, pixels=True, pkfrac=
     
     if gauss:
         # Gaussian fitting
-        y_local = np.arange(len(profile))
-        popt, _, fitted = fit_gaussian(y_local, profile)
+       # y_local = np.arange(len(profile))
+        popt, _, fitted = fit_gaussian(y_positions, profile)
         amplitude, center_local, sigma, offset, slope = popt
         
         # Iterative robust fitting with outliers rejection
@@ -109,20 +110,29 @@ def estimate_width_getxwd(profile, y_positions, gauss=True, pixels=True, pkfrac=
         good_mask = residuals < 0.33 * amplitude
         
         if np.sum(good_mask) > 7 and np.sum(good_mask) < len(profile):
-            popt, _, _ = fit_gaussian(y_local[good_mask], profile[good_mask])
-            amplitude, center_local, sigma, offset, slope = popt
+            popt, _, _ = fit_gaussian(y_positions[good_mask], profile[good_mask])
+            amplitude, center, sigma, offset, slope = popt
+
+        print(amplitude, center, sigma, offset, slope)
         
         # Profile y limits (truncate on 7 sigmas as Nikolay did)
         z_max = 7.0
-        yym1 = max(0, int(np.floor(center_local - z_max * sigma - 2)))
-        yym2 = min(len(profile) - 1, int(np.ceil(center_local + z_max * sigma + 2)))
+
+        y_min_limit = center - z_max * sigma - 2
+        y_max_limit = center + z_max * sigma + 2
+
+        yym1 = max(y_positions[0], y_min_limit)
+        yym2 = min(y_positions[-1], y_max_limit)
+
+     #   yym1 = max(0, int(np.floor(center_local - z_max * sigma - 2)))
+      #  yym2 = min(len(profile) - 1, int(np.ceil(center_local + z_max * sigma + 2)))
         
         if pixels:
-            width = (yym2 - yym1 + 1) 
+            width = yym2 - yym1 
         else:
-            width = pkfrac * (yym2 - yym1 + 1) / len(profile)
+            width = (yym2 - yym1 + 1) / len(profile)
         
-        center = y_positions[int(center_local)] if int(center_local) < len(y_positions) else y_positions[len(y_positions)//2]
+        #center = y_positions[int(center_local)] if int(center_local) < len(y_positions) else y_positions[len(y_positions)//2]
         
         return width, center, popt
 
@@ -139,7 +149,7 @@ def estimate_width_getxwd(profile, y_positions, gauss=True, pixels=True, pkfrac=
             # IDL: xwd[0,0]=0.5+0.5*nkeep+1, xwd[1,0]=0.5+0.5*nkeep+1
             width = (0.5 + 0.5 * nkeep + 1)  # fraction of order to extract
         else:
-            width = pkfrac * (0.5 + 0.5 * nkeep + 1) / len(profile) # fraction of order to extract
+            width = (0.5 + 0.5 * nkeep + 1) / len(profile) # fraction of order to extract
         
         # Оценка центра как среднего значения пикселей выше порога
         if nkeep > 0:
@@ -150,8 +160,6 @@ def estimate_width_getxwd(profile, y_positions, gauss=True, pixels=True, pkfrac=
             center = y_positions[len(y_positions)//2]
     
     return width, center
-
-# ========== ОСТАЛЬНЫЕ ФУНКЦИИ БЕЗ ИЗМЕНЕНИЙ ==========
 
 def plot_vertical_profile(profile, peaks=None, output_dir=None):
     """Plot vertical profile with detected peaks
@@ -180,51 +188,55 @@ def plot_vertical_profile(profile, peaks=None, output_dir=None):
     
     return profile
 
-def plot_order_fit(image, x, y_center, profile, fit_params, order_num, width_getxwd=None):
+def plot_order_fit(image, x, profile, y_coordinates, order_num, width_getxwd, fit_params=None):
     """Plot order profile fit at a specific position"""
     plt.figure(figsize=(15, 5))
     
     # Plot 1: Image section
     plt.subplot(131)
+    y_center = y_coordinates[len(profile)//2]  # Center of the profile
     y_start = max(0, int(y_center - 50))
     y_end = min(image.shape[0], int(y_center + 50))
     x_start = max(0, x - 100)
     x_end = min(image.shape[1], x + 100)
-  
-    plt.imshow(image[y_start:y_end, x_start:x_end], aspect='auto', cmap='gray')
-    plt.axvline(x - x_start, color='r', linestyle='--', alpha=0.5)
-    
-    # Показываем ширину от getxwd вместо старой
-    if width_getxwd is not None:
-        plt.axhline((y_center - y_start) - width_getxwd/2, color='g',ls='--', label='getxwd width')
-        plt.axhline((y_center - y_start) + width_getxwd/2, color='g',ls='--')
-    elif fit_params is not None:
+
+    print(f"Image section: Y[{y_start}:{y_end}], X[{x_start}:{x_end}]") 
+    plt.imshow(image[y_start:y_end, x_start:x_end], aspect='auto', cmap='gray',
+               extent=[x_start, x_end, y_end, y_start])
+    plt.axvline(x, color='r', linestyle='--', alpha=0.5)
+
+    # Показываем ширину от getxwd 
+    if fit_params is not None:
         width = fit_params[2] * 2.355  # FWHM
-        plt.axhline((y_center - y_start) - width/2, color='purple',ls=':', alpha=0.7, label='old width')
-        plt.axhline((y_center - y_start) + width/2, color='purple',ls=':', alpha=0.7)
+        center_img = fit_params[1]
+   #     print(f"width: {width}, {center_img},  {center_img - width/2,center_img + width/2}")
+        plt.axhline(center_img - width/2, color='purple',ls=':', alpha=0.7, label='Gaussian_width')
+        plt.axhline(center_img + width/2, color='purple',ls=':', alpha=0.7)
+    else:
+        plt.axhline(y_center - width_getxwd/2, color='g',ls='--', label='getxwd width')
+        plt.axhline(y_center + width_getxwd/2, color='g',ls='--')
     
     plt.title(f'Order {order_num} at x={x}')
+    plt.xlabel('X pixel')
+    plt.ylabel('Y pixel')
     plt.legend()
     
     # Plot 2: Profile and fit
     plt.subplot(132)
-    y = np.arange(len(profile))
-    plt.plot(y, profile,  'ko-', label='Data', markersize=3)
+    plt.plot(y_coordinates, profile, 'ko-', label='Data', markersize=3)
     
     if fit_params is not None:
-        y_fit = np.linspace(y[0], y[-1], 100)
-        fit = gaussian_pisk(y_fit, *fit_params)
-        plt.plot(y_fit, fit, 'r-', label='Gaussian fit')
+        y_fit = np.linspace(y_coordinates[0], y_coordinates[-1], 100)
+        fit_curve = gaussian_pisk(y_fit, *fit_params)
+        plt.plot(y_fit, fit_curve, 'r-', label='Gaussian fit')
         
         center = fit_params[1]
         width = fit_params[2] * 2.355  # FWHM
         plt.axvline(center, color='g', linestyle='--', label='Center')
         plt.axvline(center - width/2, color='b', linestyle=':', alpha=0.5)
         plt.axvline(center + width/2, color='b', linestyle=':', alpha=0.5)
-    
-    # Показываем ширину от getxwd
-    if width_getxwd is not None:
-        center_idx = len(profile) // 2
+    else:
+        center_idx = y_coordinates[len(profile) // 2]
         plt.axvline(center_idx - width_getxwd/2, color='orange', linestyle='-', alpha=0.8, label='getxwd bounds')
         plt.axvline(center_idx + width_getxwd/2, color='orange', linestyle='-', alpha=0.8)
     
@@ -236,9 +248,9 @@ def plot_order_fit(image, x, y_center, profile, fit_params, order_num, width_get
     # Plot 3: Residuals if fit exists
     plt.subplot(133)
     if fit_params is not None:
-        fit_at_data = gaussian_pisk(y, *fit_params)
+        fit_at_data = gaussian_pisk(y_coordinates, *fit_params)
         residuals = profile - fit_at_data
-        plt.plot(y, residuals, 'ko-', markersize=3)
+        plt.plot(y_coordinates, residuals, 'ko-', markersize=3)
         plt.axhline(0, color='r', linestyle='--', alpha=0.5)
         plt.title('Fit Residuals')
         plt.ylabel('Residual')
@@ -250,8 +262,9 @@ def plot_order_fit(image, x, y_center, profile, fit_params, order_num, width_get
         plt.title('Width from getxwd')
     
     plt.tight_layout()
-    plt.pause(1)
-    plt.close()
+    plt.show()
+    # plt.pause(1)
+    # plt.close()
 
 def estimate_window_sizes(image, peaks):
     """
@@ -312,26 +325,15 @@ def estimate_window_sizes(image, peaks):
         'snr': snr
     }
 
-def trace_orders(image, n_orders=None, use_getxwd=True, getxwd_gauss=True, smooth_sigma=1.0):
+def trace_orders(image, n_orders=None, getxwd_gauss=True, smooth=False, smooth_sigma=1.0):
     """
-    Trace spectral orders with visual debugging
-    
-    Parameters:
-    -----------
-    image : 2D array
-        Изображение для анализа
-    n_orders : int, optional
-        Количество порядков для анализа
-    use_getxwd : bool
-        Использовать алгоритм getxwd для оценки ширины (иначе super_gaussian)
-    getxwd_gauss : bool
-        При использовании getxwd: True - гауссовская модель, False - пороговая
     """
     print("Step 1: Analyzing vertical profile...")
     vertical_profile = np.median(image, axis=1)
     
-    vertical_profile = gaussian_filter1d(vertical_profile, sigma=smooth_sigma)
-    print(f"Applied Gaussian smoothing with sigma={smooth_sigma}")
+    if smooth:
+        vertical_profile = gaussian_filter1d(vertical_profile, sigma=smooth_sigma)
+        print(f"Applied Gaussian smoothing with sigma={smooth_sigma}")
 
     # Find peaks
     prominence = np.percentile(vertical_profile, 25) 
@@ -344,7 +346,6 @@ def trace_orders(image, n_orders=None, use_getxwd=True, getxwd_gauss=True, smoot
         strongest_indices = np.argsort(peak_heights)[-n_orders:]
         peaks = np.sort(peaks[strongest_indices])
     
-    # Plot vertical profile
     plot_vertical_profile(vertical_profile, peaks)
     
     # Process each order
@@ -356,7 +357,6 @@ def trace_orders(image, n_orders=None, use_getxwd=True, getxwd_gauss=True, smoot
     print(f"Estimated windows: X={windows['x_window']}, Y={windows['y_window']}")
     print(f"Order separation: {windows['typical_separation']:.1f}")
     print(f"SNR: {windows['snr']:.1f}")
-    print(f"Using {'getxwd' if use_getxwd else 'fit_gaussian'} for width estimation")
     
     for order_num, peak in enumerate(peaks, 1):
         print(f"\nProcessing Order {order_num}...")
@@ -365,103 +365,49 @@ def trace_orders(image, n_orders=None, use_getxwd=True, getxwd_gauss=True, smoot
         x_positions = []
         
         # Sample points along dispersion
-        for x in range(0, image.shape[1], 460):
+        for x in range(0, image.shape[1], 460): #TODO сделать произвольный шаг трассировки (4600/шаг)
             # Используем оцененные размеры окон
             x_start = max(0, x - windows['x_window']//2)
             x_end = min(image.shape[1], x + windows['x_window']//2)
-            # y_start = max(0, peak - windows['y_window'])
-            # y_end = min(image.shape[0], peak + windows['y_window'])
+            y_start = max(0, peak - windows['y_window'])
+            y_end = min(image.shape[0], peak + windows['y_window'])
 
-            y_start = max(0, peak - 15)
-            y_end = min(image.shape[0], peak + 15)
+            # y_start = max(0, peak - 15)
+            # y_end = min(image.shape[0], peak + 15)
             
             local_profile = np.median(image[y_start:y_end, x_start:x_end], axis=1)
+            y_positions = np.arange(y_start, y_end)
             
-            if use_getxwd:
-                # Используем алгоритм getxwd
-                try:
-                    y_positions = np.arange(y_start, y_end)
-                    if getxwd_gauss:
-                        width_getxwd, center_getxwd, local_popt = estimate_width_getxwd(
-                            local_profile, y_positions, 
-                            gauss=getxwd_gauss, pixels=True
-                        )
-                    
-                        print("Gauss here!")
-                        print(f"  getxwd at x={x}: width={width_getxwd:.2f}, center={center_getxwd:.2f}")
-                    
-                        # Plot результат
-                        plot_order_fit(image, x, center_getxwd, local_profile, 
-                                    local_popt, order_num, width_getxwd=width_getxwd)
-                        
-                    else:
-                        width_getxwd, center_getxwd = estimate_width_getxwd(
-                            local_profile, y_positions, 
-                            gauss=getxwd_gauss, pixels=True
-                        )
-                        print("No gauss here!")
-                        print(f"  getxwd at x={x}: width={width_getxwd:.2f}, center={center_getxwd:.2f}")
+            # Используем алгоритм getxwd
+            try:
+                if getxwd_gauss:
+                    width_getxwd, center_getxwd, local_popt = estimate_width_getxwd(
+                        local_profile, y_positions, 
+                        gauss=getxwd_gauss)
+                    print(f"  getxwd at x={x}: width={width_getxwd:.2f}, center={center_getxwd:.2f}")
+                
+                    # Plot результат
+                    plot_order_fit(image, x, local_profile, y_positions,
+                                 order_num, width_getxwd,fit_params=local_popt)  
+                else:
+                    width_getxwd, center_getxwd = estimate_width_getxwd(
+                        local_profile, y_positions, 
+                        gauss=getxwd_gauss)
+                    print(f"  getxwd at x={x}: width={width_getxwd:.2f}, center={center_getxwd:.2f}")
 
-                        # Plot результат
-                        plot_order_fit(image, x, center_getxwd, local_profile, 
-                                    None, order_num, width_getxwd=width_getxwd)
-                    
-                    # Store results
-                    centers.append(center_getxwd)
-                    order_widths.append(width_getxwd)
-                    x_positions.append(x)
-                    
-                except Exception as e:
-                    print(f"  getxwd failed at x={x}: {e}")
-                    continue
-                    
-            else:
-                # Используем старый алгоритм super_gaussian
-                power_gauss = 0.0
-                try:
-                    # Fit Gaussian
-                    ## Initial params for super_gaussian
-                    # p0 = [np.max(local_profile) - np.min(local_profile),  # amplitude
-                    #       len(local_profile) // 2,  # center
-                    #       len(local_profile) / 10,  # sigma
-                    #       power_gauss,                        # power
-                    #       np.min(local_profile)]    # offset
-                    
-                    # Initial params for fit_gaussian 
-                    p0 = [np.max(local_profile) - np.min(local_profile),
-                          len(local_profile) // 2, #
-                          len(local_profile) / 6,
-                           0, # np.min(local_profile), #offset
-                          (local_profile[-1] - local_profile[0]) / (local_profile[-1] - local_profile[0])  # Грубая оценка наклона
-                    ]
-                                  
-                    popt, _ = curve_fit(gaussian_pisk, np.arange(len(local_profile)), 
-                                      local_profile, p0=p0,
-                                    #   bounds = ([0, 0, 0, 0.0, 0],             # нижние границы
-                                    #             [np.inf, len(local_profile), np.inf, 4.0, np.inf])  # верхние границы
-                                        )            
-                    print("No getxwd here!")
-                    print(f"""
-                          Estimated curve parameters:
-                          Amplitude {popt[0]},
-                          Center {popt[1]},
-                          Sigma width {popt[2]},
-                          Power of sigma / Offset{popt[3]},
-                          Offset / Slope {popt[4]}""")                
-                    
-                    # Plot fit
-                    plot_order_fit(image, x, y_start + popt[1], local_profile, popt, order_num)
-                    
-                    # Store results if fit looks good
-                    if 0 < popt[1] < len(local_profile):
-                        centers.append(y_start + popt[1])
-                        order_widths.append(popt[2] * 2.355)  # FWHM
-                        x_positions.append(x)
-                    
-                except RuntimeError:
-                    print(f"  Failed to fit at x={x}")
-                    continue
-        
+                    # Plot результат
+                    plot_order_fit(image, x, local_profile, y_positions,
+                                 order_num, width_getxwd, fit_params=None)
+                
+                # Store results
+                centers.append(center_getxwd)
+                order_widths.append(width_getxwd)
+                x_positions.append(x)
+                
+            except Exception as e:
+                print(f"  getxwd failed at x={x}: {e}")
+                continue
+                       
         if len(centers) > 3:
             # Fit polynomial to centers
             trace_coeffs = chebfit(x_positions, centers, deg=2)
@@ -475,11 +421,18 @@ def trace_orders(image, n_orders=None, use_getxwd=True, getxwd_gauss=True, smoot
             # Plot trace
             x_fit = np.arange(image.shape[1])
             y_fit = chebval(x_fit, trace_coeffs)
+
+            trace_upper = y_fit - width / 2
+            trace_lower = y_fit + width / 2
             
+            z_scale = ZScaleInterval()
+            z1,z2 = z_scale.get_limits(image)
             plt.figure(figsize=(12, 6))
-            plt.imshow(image, aspect='auto', cmap='gray')
+            plt.imshow(image, aspect='auto', cmap='coolwarm',vmin=z1, vmax=z2)
             plt.plot(x_positions, centers, 'r.', label='Measured centers', markersize=8)
-            plt.plot(x_fit, y_fit, 'b-', label='Polynomial fit', linewidth=2)
+            plt.plot(x_fit, y_fit, 'b-', label='Polynomial fit', linewidth=1.5)
+            plt.plot(x_fit, trace_upper, 'y--',linewidth=1,alpha=0.8)
+            plt.plot(x_fit, trace_lower, 'y--',linewidth=1,alpha=0.8)
             plt.title(f'Order {order_num} Trace (Width: {width:.2f} pixels)')
             plt.xlabel('X pixel')
             plt.ylabel('Y pixel')
@@ -499,8 +452,8 @@ if __name__ == '__main__':
     
     # Trace orders with getxwd
     print('Tracing orders with getxwd algorithm...')
-    traces, widths = trace_orders(flat_data, n_orders=14, smooth_sigma=3.0,
-                                 use_getxwd=False, getxwd_gauss=False)
+    traces, widths = trace_orders(flat_data, n_orders=14, smooth=True,
+                                  getxwd_gauss=False)
     
     print(f'\nFound {len(traces)} orders')
     
