@@ -8,6 +8,7 @@ from numpy.polynomial.chebyshev import chebfit, chebval
 from scipy.ndimage import gaussian_filter1d
 import warnings
 from astropy.visualization import ZScaleInterval
+from scipy.stats import linregress
 
 #==== My functions ====
 def gaussian(x, amplitude, center, sigma, offset):
@@ -67,30 +68,6 @@ def fit_gaussian(x, y, initial_guess=None):
 
 def estimate_width_getxwd(profile, y_positions, gauss=True, pixels=True):
     """
-    Случай для одного порядка (getxwd lines 62--100)
-
-    Profile width estimation (getxwd from REDUCE)
-    Calculate the location of order peaks in center of image (local coordinates)
-    
-    Parameters:
-    -----------
-    profile : array
-        Profile intensity accross the slice
-    y_positions : array
-        y-coordinates of the profile
-    gauss : bool
-        Fit with gaussian (yes/no)
-    pixels : bool
-        Return result in pixels (either in fraction)
-    pkfrac : float
-        Allowable fraction of peak
-    
-    Returns:
-    --------
-    width : float
-        full width of the profile
-    center : float
-        profile center
     """
     
     if gauss:
@@ -140,14 +117,16 @@ def estimate_width_getxwd(profile, y_positions, gauss=True, pixels=True):
         # Пороговая модель getxwd
         pmin = np.min(profile) #background trough counts
         pmax = np.max(profile) #order peak counts
-        threshold = np.sqrt(max(pmin, 1) * pmax) * 0.5
+        threshold = np.sqrt(max(pmin, 1) * pmax) *0.9 # Геометрическое среднее
+        print(f"Threshold of the slice {threshold}")
         
         keep_mask = profile > threshold
+
         nkeep = np.sum(keep_mask)
         
         if pixels:
             # IDL: xwd[0,0]=0.5+0.5*nkeep+1, xwd[1,0]=0.5+0.5*nkeep+1
-            width = (0.5 + 0.5 * nkeep + 1)  # fraction of order to extract
+            width = (0.5+ nkeep +2)  # fraction of order to extract
         else:
             width = (0.5 + 0.5 * nkeep + 1) / len(profile) # fraction of order to extract
         
@@ -285,63 +264,54 @@ def plot_order_fit(image, x, profile, y_coordinates, order_num, width_getxwd, fi
     # plt.pause(1)
     # plt.close()
 
-def estimate_window_sizes(image, peaks):
+def find_order_boundaries(image, peaks,border_width=50):
     """
-    Оценивает оптимальные размеры окон для анализа профилей
-    
-    Parameters:
-        image: 2D array - изображение
-        peaks: array - позиции пиков
-        
-    Returns:
-        dict: размеры окон по X и Y
     """
-    # 1. Оценка Y-окна из расстояния между порядками
-    peak_separations = np.diff(peaks)
-    typical_separation = np.median(peak_separations)
-    y_window = int(typical_separation * 0.35)
- 
-    # 2. Оценка X-окна через автокорреляцию
-    def estimate_x_scale(image):
-        # Берем центральную часть изображения
-        center_y = image.shape[0] // 2
-        profile = image[center_y, :]
-        
-        # Вычисляем автокорреляцию
-        autocorr = np.correlate(profile, profile, mode='full')
-        autocorr = autocorr[len(autocorr)//2:]
-        
-        # Находим первый минимум после центрального пика
-        peaks_auto, _ = find_peaks(-autocorr)
-        if len(peaks_auto) > 0:
-            return peaks_auto[0]
-        else:
-            return image.shape[1] // 20  # fallback: 5% от ширины
+    # 1. Аппроксимируем фон по краям изображения
+    spatial_axis = np.arange(image.shape[0])
+
+    # Берем данные из краевых областей
+    left_bg = image[:border_width, :].mean(axis=1)
+    right_bg = image[-border_width:, :].mean(axis=1)
+    bg_data = np.concatenate([left_bg, right_bg])
+    bg_positions = np.concatenate([spatial_axis[:border_width], 
+                                 spatial_axis[-border_width:]])
     
-    x_scale = estimate_x_scale(image)
-    x_window = max(x_scale * 2, image.shape[1] // 20)
+        # Линейная аппроксимация фона
+    slope, intercept, _, _, _ = linregress(bg_positions, bg_data)
+
+    # 2. Функция для поиска границ в заданной области
+    def find_boundary(search_start, search_end):
+        profile = image[search_start:search_end, :].mean(axis=1)
+        x = np.arange(search_start, search_end)
+        bg = slope * x + intercept
+        diff = np.abs(profile - bg)
+        return search_start + np.argmin(diff)
     
-    # 3. Проверка отношения сигнал/шум
-    def estimate_snr(image, x_window, y_window):
-        center_x = image.shape[1] // 2 # width / 2
-        center_y = image.shape[0] // 2 # heigth / 2
+    # 3. Внутренние границы между порядками
+    boundaries = []
+    if len(peaks) >= 2:
+        for i in range(len(peaks)-1):
+            search_radius = min(20, (peaks[i+1] - peaks[i])/4)
+            search_center = (peaks[i] + peaks[i+1]) / 2
+            boundary = find_boundary(
+                int(max(0, search_center - search_radius)),
+                int(min(image.shape[0], search_center + search_radius))
+            )
+            boundaries.append(boundary)
+  
+    # Левая граница (левее первого пика)
+    if len(peaks) > 0:
+        left_boundary = find_boundary(peaks[0]-20,peaks[0])
+        boundaries.insert(0, left_boundary)
         
-        # Берем центральную область
-        region = image[max(0, center_y - y_window):min(image.shape[0], center_y + y_window),
-                      max(0, center_x - x_window):min(image.shape[1], center_x + x_window)]
-        
-        signal = np.median(region)
-        noise = np.std(region - signal)
-        return signal / noise if noise > 0 else 0
-    
-    # Корректируем размеры окон на основе SNR
-    snr = estimate_snr(image, x_window, y_window)
-    
+        # Правая граница (правее последнего пика)
+        right_boundary = find_boundary( peaks[-1],peaks[-1]+20)
+        boundaries.append(right_boundary)
+
     return {
-        'x_window': x_window,
-        'y_window': y_window,
-        'typical_separation': typical_separation,
-        'snr': snr
+        'boundaries': np.array(boundaries),
+        'background_model': (slope, intercept)
     }
 
 def trace_orders(image, n_orders=None, getxwd_gauss=True, smooth=False, smooth_sigma=1.0):
@@ -371,11 +341,29 @@ def trace_orders(image, n_orders=None, getxwd_gauss=True, smooth=False, smooth_s
     traces = []
     widths = []
 
+    
     # Оцениваем размеры окон
-    windows = estimate_window_sizes(image, peaks)
-    print(f"Estimated windows: X={windows['x_window']}, Y={windows['y_window']}")
-    print(f"Order separation: {windows['typical_separation']:.1f}")
-    print(f"SNR: {windows['snr']:.1f}")
+    bounds = find_order_boundaries(image, peaks, border_width=50)
+    plt.figure(figsize=(12, 6))
+
+    # Пространственный профиль (усредненный по длинам волн)
+    profile = image.mean(axis=1)
+    plt.plot(profile, label='Средний профиль')
+
+    # Фоновая модель
+    bg_line = bounds['background_model'][0] * np.arange(len(profile)) + bounds['background_model'][1]
+    plt.plot(bg_line, '--', label='Модель фона')
+  
+    # Внутренние границы
+    for bound in bounds['boundaries']:
+        plt.axvline(x=bound, color='g', linestyle=':', alpha=0.7, 
+                    label='Границы слайсов' if bound == bounds['boundaries'][0] else "")
+
+    plt.title("Определение границ по фону")
+    plt.xlabel("Пространственная ось (пиксели)")
+    plt.ylabel("Интенсивность")
+    plt.legend()
+    plt.show()
     
     for order_num, peak in enumerate(peaks, 1):
         print(f"\nProcessing Order {order_num}...")
@@ -385,24 +373,25 @@ def trace_orders(image, n_orders=None, getxwd_gauss=True, smooth=False, smooth_s
         
         # Sample points along dispersion
         for x in range(0, image.shape[1], 460): #TODO сделать произвольный шаг трассировки (4600/шаг)
+            print(f"x = {x}")
             # Используем оцененные размеры окон
-            x_start = max(0, x - windows['x_window']//2)
-            x_end = min(image.shape[1], x + windows['x_window']//2)
-            y_start = max(0, peak - windows['y_window'])
-            y_end = min(image.shape[0], peak + windows['y_window'])
+            x_start = max(0, x - image.shape[1] // 460)
+            x_end = min(image.shape[1], x + image.shape[1] // 460)
+            y_start = bounds['boundaries'][order_num -1] 
+            y_end = bounds['boundaries'][order_num] 
 
             # y_start = max(0, peak - 15)
             # y_end = min(image.shape[0], peak + 15)
             
-            local_profile = np.median(image[y_start:y_end, x_start:x_end], axis=1)
-            y_positions = np.arange(y_start, y_end)
+            local_profile = np.median(image[y_start-1:y_end+1, x_start:x_end], axis=1)
+            y_positions = np.arange(y_start-1, y_end+1)
 
-            print(f""" Координаты окна для трассировки профиля x_start, x_end, y_start, y_end: {x_start, x_end, y_start, y_end},
-                  получены из windows: {windows},
-                  медиана по окну image[{y_start}:{y_end}, {x_start}:{x_end}],
-                  local_profile: {','.join(map(str, local_profile))},
-                  y_positions: {','.join(map(str, y_positions))}.
-                    """)
+            # print(f""" Координаты окна для трассировки профиля x_start, x_end, y_start, y_end: {x_start, x_end, y_start, y_end},
+            #       получены из windows: {windows},
+            #       медиана по окну image[{y_start}:{y_end}, {x_start}:{x_end}],
+            #       local_profile: {','.join(map(str, local_profile))},
+            #       y_positions: {','.join(map(str, y_positions))}.
+            #         """)
             
             # Используем алгоритм getxwd
             try:
@@ -439,11 +428,6 @@ def trace_orders(image, n_orders=None, getxwd_gauss=True, smooth=False, smooth_s
                 centers.append(center_getxwd)
                 order_widths.append(width_getxwd)
                 x_positions.append(x)
-
-                print(f"""Собираем массив 
-                      centers: {centers}, 
-                      order_widths: {order_widths}, 
-                      x_positions:{x_positions}""")
                 
             except Exception as e:
                 print(f"  getxwd failed at x={x}: {e}")
@@ -494,7 +478,7 @@ if __name__ == '__main__':
     # Trace orders with getxwd
     print('Tracing orders with getxwd algorithm...')
     traces, widths = trace_orders(flat_data, n_orders=14, smooth=True,
-                                  getxwd_gauss=False)
+                                  getxwd_gauss=False, smooth_sigma=3)
     
     print(f'\nFound {len(traces)} orders')
     
@@ -512,13 +496,3 @@ if __name__ == '__main__':
             f.write('-' * 40 + '\n')
     
     print('Done!')
-
-
-# # С getxwd (гауссовская модель)
-# traces, widths = trace_orders(image, use_getxwd=True, getxwd_gauss=True)
-
-# # С getxwd (пороговая модель)  
-# traces, widths = trace_orders(image, use_getxwd=True, getxwd_gauss=False)
-
-# # Старый метод
-# traces, widths = trace_orders(image, use_getxwd=False)
