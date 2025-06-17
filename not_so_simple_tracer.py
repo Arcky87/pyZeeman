@@ -133,7 +133,7 @@ def estimate_width_getxwd(profile, y_positions, gauss=True, pixels=True):
             width = (yym2 - yym1 + 1) / len(profile)
         
         #center = y_positions[int(center_local)] if int(center_local) < len(y_positions) else y_positions[len(y_positions)//2]
-        
+        print(f"estimate_width_getxwd returned {width}, {center}, {popt} with gaussian fit")
         return width, center, popt
 
     else:
@@ -158,7 +158,7 @@ def estimate_width_getxwd(profile, y_positions, gauss=True, pixels=True):
             center = y_positions[int(center_local)] if int(center_local) < len(y_positions) else y_positions[len(y_positions)//2]
         else:
             center = y_positions[len(y_positions)//2]
-    
+    print(f"estimate_width_getxwd returned {width}, {center} without gaussian fit")
     return width, center
 
 def plot_vertical_profile(profile, peaks=None, output_dir=None):
@@ -192,6 +192,7 @@ def plot_order_fit(image, x, profile, y_coordinates, order_num, width_getxwd, fi
     """Plot order profile fit at a specific position"""
     plt.figure(figsize=(15, 5))
     
+    print(f"Image shape for coodinate setup y_end {image.shape[0]}, x_end {image.shape[1]}")
     # Plot 1: Image section
     plt.subplot(131)
     y_center = y_coordinates[len(profile)//2]  # Center of the profile
@@ -200,19 +201,27 @@ def plot_order_fit(image, x, profile, y_coordinates, order_num, width_getxwd, fi
     x_start = max(0, x - 100)
     x_end = min(image.shape[1], x + 100)
 
-    print(f"Image section: Y[{y_start}:{y_end}], X[{x_start}:{x_end}]") 
+    print(f"""Coordinates for imshow at plot_order_fit are y_center={y_center}, 
+            y_start={y_start}, y_end={y_end}, x_start={x_start}, x_end={x_end}""")
+
     plt.imshow(image[y_start:y_end, x_start:x_end], aspect='auto', cmap='gray',
                extent=[x_start, x_end, y_end, y_start])
     plt.axvline(x, color='r', linestyle='--', alpha=0.5)
 
     # Показываем ширину от getxwd 
+    print(f"""Параметры, полученные plot
+          fit_params: {fit_params},
+          width_getxwd: {width_getxwd},
+          y_coordinates: {y_coordinates}
+А теперь рисуем""")
     if fit_params is not None:
-        width = fit_params[2] * 2.355  # FWHM
+        width = width_getxwd  
         center_img = fit_params[1]
-   #     print(f"width: {width}, {center_img},  {center_img - width/2,center_img + width/2}")
+        print(f"WIDTH FOR FIRST SUBPLOT. Params for plotting the fit (from fit_params). fit_params[2]: {fit_params[2]}, width (fit_params[2] * 2.355): {width}, width_getxwd: {width_getxwd}")
         plt.axhline(center_img - width/2, color='purple',ls=':', alpha=0.7, label='Gaussian_width')
         plt.axhline(center_img + width/2, color='purple',ls=':', alpha=0.7)
     else:
+        print(f"WIDTH FOR FIRST SUBPLOT. Params for plotting the fit (without gaussian). width_getxwd:{width_getxwd}, y_center:{y_center}")
         plt.axhline(y_center - width_getxwd/2, color='g',ls='--', label='getxwd width')
         plt.axhline(y_center + width_getxwd/2, color='g',ls='--')
     
@@ -231,14 +240,24 @@ def plot_order_fit(image, x, profile, y_coordinates, order_num, width_getxwd, fi
         plt.plot(y_fit, fit_curve, 'r-', label='Gaussian fit')
         
         center = fit_params[1]
-        width = fit_params[2] * 2.355  # FWHM
+        width = width_getxwd  # FWHM
         plt.axvline(center, color='g', linestyle='--', label='Center')
         plt.axvline(center - width/2, color='b', linestyle=':', alpha=0.5)
         plt.axvline(center + width/2, color='b', linestyle=':', alpha=0.5)
+        print(f"""SETUP FOR SECOND SUBPLOT. Params for plotting the fit (from gaussian_pisk). 
+              y_fit: {y_fit} (linspace of y_coordinates), 
+              y_coordinates: {y_coordinates[0]}, {y_coordinates[-1]},
+              center (fit_params[1]): {center},  width (fit_params[2] * 2.355): {width}
+              Check gaussian_pisk for correct fit_curve""")
+
     else:
         center_idx = y_coordinates[len(profile) // 2]
         plt.axvline(center_idx - width_getxwd/2, color='orange', linestyle='-', alpha=0.8, label='getxwd bounds')
         plt.axvline(center_idx + width_getxwd/2, color='orange', linestyle='-', alpha=0.8)
+        print(f"""SETUP FOR SECOND SUBPLOT. Params for plotting the width without gaussian fit
+              center_idx: {center_idx} (y_coordinates[len(profile) // 2]),
+              width_getxwd: {width_getxwd}, left border: {center_idx - width_getxwd/2}, right border: {center_idx + width_getxwd/2}
+              """)
     
     plt.title('Profile and Fit')
     plt.xlabel('Y pixel')
@@ -377,6 +396,13 @@ def trace_orders(image, n_orders=None, getxwd_gauss=True, smooth=False, smooth_s
             
             local_profile = np.median(image[y_start:y_end, x_start:x_end], axis=1)
             y_positions = np.arange(y_start, y_end)
+
+            print(f""" Координаты окна для трассировки профиля x_start, x_end, y_start, y_end: {x_start, x_end, y_start, y_end},
+                  получены из windows: {windows},
+                  медиана по окну image[{y_start}:{y_end}, {x_start}:{x_end}],
+                  local_profile: {','.join(map(str, local_profile))},
+                  y_positions: {','.join(map(str, y_positions))}.
+                    """)
             
             # Используем алгоритм getxwd
             try:
@@ -387,6 +413,16 @@ def trace_orders(image, n_orders=None, getxwd_gauss=True, smooth=False, smooth_s
                     print(f"  getxwd at x={x}: width={width_getxwd:.2f}, center={center_getxwd:.2f}")
                 
                     # Plot результат
+                    print(f""" Передаем в plot_order_fit следующее:
+                          plot_order_fit(image, x, profile, y_coordinates, order_num, width_getxwd, fit_params=None),
+                          x: {x},
+                          profile: {local_profile} (local_profile),
+                          y_coordinates: {y_positions},
+                          order_num: {order_num} (счетчик порядка),
+                          width_getxwd: {width_getxwd},
+                          fit_paramt: {local_popt} (local_popt, результат estimate_width_getxwd)
+
+                          """)
                     plot_order_fit(image, x, local_profile, y_positions,
                                  order_num, width_getxwd,fit_params=local_popt)  
                 else:
@@ -403,6 +439,11 @@ def trace_orders(image, n_orders=None, getxwd_gauss=True, smooth=False, smooth_s
                 centers.append(center_getxwd)
                 order_widths.append(width_getxwd)
                 x_positions.append(x)
+
+                print(f"""Собираем массив 
+                      centers: {centers}, 
+                      order_widths: {order_widths}, 
+                      x_positions:{x_positions}""")
                 
             except Exception as e:
                 print(f"  getxwd failed at x={x}: {e}")
