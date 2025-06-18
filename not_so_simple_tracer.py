@@ -384,6 +384,7 @@ def trace_orders(image, n_orders=None, getxwd_gauss=True, smooth=False, smooth_s
             # y_end = min(image.shape[0], peak + 15)
             
             local_profile = np.median(image[y_start-1:y_end+1, x_start:x_end], axis=1)
+            local_profile = gaussian_filter1d(local_profile, smooth_sigma=3) ## EXPERIMENTAL
             y_positions = np.arange(y_start-1, y_end+1)
 
             # print(f""" Координаты окна для трассировки профиля x_start, x_end, y_start, y_end: {x_start, x_end, y_start, y_end},
