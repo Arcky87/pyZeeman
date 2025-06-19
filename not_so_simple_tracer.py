@@ -9,6 +9,9 @@ from scipy.ndimage import gaussian_filter1d
 import warnings
 from astropy.visualization import ZScaleInterval
 from scipy.stats import linregress
+from loaders import *
+import os
+import json
 
 #==== My functions ====
 def gaussian(x, amplitude, center, sigma, offset):
@@ -188,11 +191,6 @@ def plot_order_fit(image, x, profile, y_coordinates, order_num, width_getxwd, fi
     plt.axvline(x, color='r', linestyle='--', alpha=0.5)
 
     # Показываем ширину от getxwd 
-    print(f"""Параметры, полученные plot
-          fit_params: {fit_params},
-          width_getxwd: {width_getxwd},
-          y_coordinates: {y_coordinates}
-А теперь рисуем""")
     if fit_params is not None:
         width = width_getxwd  
         center_img = fit_params[1]
@@ -223,21 +221,12 @@ def plot_order_fit(image, x, profile, y_coordinates, order_num, width_getxwd, fi
         plt.axvline(center, color='g', linestyle='--', label='Center')
         plt.axvline(center - width/2, color='b', linestyle=':', alpha=0.5)
         plt.axvline(center + width/2, color='b', linestyle=':', alpha=0.5)
-        print(f"""SETUP FOR SECOND SUBPLOT. Params for plotting the fit (from gaussian_pisk). 
-              y_fit: {y_fit} (linspace of y_coordinates), 
-              y_coordinates: {y_coordinates[0]}, {y_coordinates[-1]},
-              center (fit_params[1]): {center},  width (fit_params[2] * 2.355): {width}
-              Check gaussian_pisk for correct fit_curve""")
 
     else:
         center_idx = y_coordinates[len(profile) // 2]
         plt.axvline(center_idx - width_getxwd/2, color='orange', linestyle='-', alpha=0.8, label='getxwd bounds')
         plt.axvline(center_idx + width_getxwd/2, color='orange', linestyle='-', alpha=0.8)
-        print(f"""SETUP FOR SECOND SUBPLOT. Params for plotting the width without gaussian fit
-              center_idx: {center_idx} (y_coordinates[len(profile) // 2]),
-              width_getxwd: {width_getxwd}, left border: {center_idx - width_getxwd/2}, right border: {center_idx + width_getxwd/2}
-              """)
-    
+
     plt.title('Profile and Fit')
     plt.xlabel('Y pixel')
     plt.ylabel('Intensity')
@@ -314,9 +303,8 @@ def find_order_boundaries(image, peaks,border_width=50):
         'background_model': (slope, intercept)
     }
 
-def trace_orders(image, n_orders=None, getxwd_gauss=True, smooth=False, smooth_sigma=1.0):
-    """
-    """
+def trace_orders(image, n_orders=None, getxwd_gauss=True, smooth=False, smooth_along=False, smooth_sigma=1.0, plot=False):
+
     print("Step 1: Analyzing vertical profile...")
     vertical_profile = np.median(image, axis=1)
     
@@ -329,6 +317,7 @@ def trace_orders(image, n_orders=None, getxwd_gauss=True, smooth=False, smooth_s
     print(f"prominence: {prominence}")
     peaks, properties = find_peaks(vertical_profile, prominence=prominence, width=4)
     
+    # Отбираем нужное количество порядков
     if n_orders is not None and len(peaks) > n_orders:
         # Take n_orders strongest peaks
         peak_heights = vertical_profile[peaks]
@@ -337,11 +326,10 @@ def trace_orders(image, n_orders=None, getxwd_gauss=True, smooth=False, smooth_s
     
     plot_vertical_profile(vertical_profile, peaks)
     
-    # Process each order
+    # Обработка каждого отдельного порядка
     traces = []
     widths = []
 
-    
     # Оцениваем размеры окон
     bounds = find_order_boundaries(image, peaks, border_width=50)
     plt.figure(figsize=(12, 6))
@@ -384,16 +372,10 @@ def trace_orders(image, n_orders=None, getxwd_gauss=True, smooth=False, smooth_s
             # y_end = min(image.shape[0], peak + 15)
             
             local_profile = np.median(image[y_start-1:y_end+1, x_start:x_end], axis=1)
-            local_profile = gaussian_filter1d(local_profile, smooth_sigma=3) ## EXPERIMENTAL
+            if smooth_along:
+                local_profile = gaussian_filter1d(local_profile, sigma=1) ## EXPERIMENTAL
             y_positions = np.arange(y_start-1, y_end+1)
-
-            # print(f""" Координаты окна для трассировки профиля x_start, x_end, y_start, y_end: {x_start, x_end, y_start, y_end},
-            #       получены из windows: {windows},
-            #       медиана по окну image[{y_start}:{y_end}, {x_start}:{x_end}],
-            #       local_profile: {','.join(map(str, local_profile))},
-            #       y_positions: {','.join(map(str, y_positions))}.
-            #         """)
-            
+           
             # Используем алгоритм getxwd
             try:
                 if getxwd_gauss:
@@ -401,29 +383,21 @@ def trace_orders(image, n_orders=None, getxwd_gauss=True, smooth=False, smooth_s
                         local_profile, y_positions, 
                         gauss=getxwd_gauss)
                     print(f"  getxwd at x={x}: width={width_getxwd:.2f}, center={center_getxwd:.2f}")
-                
-                    # Plot результат
-                    print(f""" Передаем в plot_order_fit следующее:
-                          plot_order_fit(image, x, profile, y_coordinates, order_num, width_getxwd, fit_params=None),
-                          x: {x},
-                          profile: {local_profile} (local_profile),
-                          y_coordinates: {y_positions},
-                          order_num: {order_num} (счетчик порядка),
-                          width_getxwd: {width_getxwd},
-                          fit_paramt: {local_popt} (local_popt, результат estimate_width_getxwd)
-
-                          """)
-                    plot_order_fit(image, x, local_profile, y_positions,
+                    
+                    if plot:
+                        # Plot результат
+                        plot_order_fit(image, x, local_profile, y_positions,
                                  order_num, width_getxwd,fit_params=local_popt)  
                 else:
                     width_getxwd, center_getxwd = estimate_width_getxwd(
                         local_profile, y_positions, 
                         gauss=getxwd_gauss)
                     print(f"  getxwd at x={x}: width={width_getxwd:.2f}, center={center_getxwd:.2f}")
-
-                    # Plot результат
-                    plot_order_fit(image, x, local_profile, y_positions,
-                                 order_num, width_getxwd, fit_params=None)
+                    
+                    if plot:
+                        # Plot результат
+                        plot_order_fit(image, x, local_profile, y_positions,
+                                     order_num, width_getxwd, fit_params=None)
                 
                 # Store results
                 centers.append(center_getxwd)
@@ -431,10 +405,14 @@ def trace_orders(image, n_orders=None, getxwd_gauss=True, smooth=False, smooth_s
                 x_positions.append(x)
                 
             except Exception as e:
-                print(f"  getxwd failed at x={x}: {e}")
+                print(f" getxwd failed at x={x}: {e}")
                 continue
                        
         if len(centers) > 3:
+            fit_result = {
+                    'metadata': {},
+                    'orders': []
+            }
             # Fit polynomial to centers
             trace_coeffs = chebfit(x_positions, centers, deg=2)
             width = np.median(order_widths)
@@ -444,56 +422,56 @@ def trace_orders(image, n_orders=None, getxwd_gauss=True, smooth=False, smooth_s
             
             print(f"Order {order_num}: median width = {width:.2f}")
             
-            # Plot trace
+ 
             x_fit = np.arange(image.shape[1])
             y_fit = chebval(x_fit, trace_coeffs)
 
             trace_upper = y_fit - width / 2
             trace_lower = y_fit + width / 2
-            
-            z_scale = ZScaleInterval()
-            z1,z2 = z_scale.get_limits(image)
-            plt.figure(figsize=(12, 6))
-            plt.imshow(image, aspect='auto', cmap='coolwarm',vmin=z1, vmax=z2)
-            plt.plot(x_positions, centers, 'r.', label='Measured centers', markersize=8)
-            plt.plot(x_fit, y_fit, 'b-', label='Polynomial fit', linewidth=1.5)
-            plt.plot(x_fit, trace_upper, 'y--',linewidth=1,alpha=0.8)
-            plt.plot(x_fit, trace_lower, 'y--',linewidth=1,alpha=0.8)
-            plt.title(f'Order {order_num} Trace (Width: {width:.2f} pixels)')
-            plt.xlabel('X pixel')
-            plt.ylabel('Y pixel')
-            plt.legend()
-            plt.show()
+
+            order_data = {
+                'slice_number': order_num,
+                'width': float(width),
+                'boundaries': {
+                    'x': x_fit.tolist(),
+                    'y_center': y_fit.tolist(),
+                    'y_upper': trace_upper.tolist(),
+                    'y_lower': trace_lower.tolist()
+                }
+            }
+            fit_result['orders'].append(order_data)
+
+
+             # Plot trace
+            if plot:          
+                z_scale = ZScaleInterval()
+                z1,z2 = z_scale.get_limits(image)
+                plt.figure(figsize=(12, 6))
+                plt.imshow(image, aspect='auto', cmap='coolwarm',vmin=z1, vmax=z2)
+                plt.plot(x_positions, centers, 'r.', label='Measured centers', markersize=8)
+                plt.plot(x_fit, y_fit, 'b-', label='Polynomial fit', linewidth=1.5)
+                plt.plot(x_fit, trace_upper, 'y--',linewidth=1,alpha=0.8)
+                plt.plot(x_fit, trace_lower, 'y--',linewidth=1,alpha=0.8)
+                plt.title(f'Order {order_num} Trace (Width: {width:.2f} pixels)')
+                plt.xlabel('X pixel')
+                plt.ylabel('Y pixel')
+                plt.legend()
+                plt.show()
     
-    return traces, widths
+    return fit_result
 
 if __name__ == '__main__':
     # Load flat field
-    temp_directory = Path('./TEMP')
-    flat_file = 's_flat.fits'
-    
-    print(f'Reading {flat_file}...')
-    with pyfits.open(flat_file) as hdul:
-        flat_data = hdul[0].data
-    
-    # Trace orders with getxwd
-    print('Tracing orders with getxwd algorithm...')
-    traces, widths = trace_orders(flat_data, n_orders=14, smooth=True,
+    file_path = ('./s_flat.fits')
+    flat_data, flat_header,_ = fits_loader(file_path)
+    result = trace_orders(flat_data, n_orders=14, smooth=True,
                                   getxwd_gauss=False, smooth_sigma=3)
     
-    print(f'\nFound {len(traces)} orders')
-    
-    # Save traces to file
-    temp_directory.mkdir(exist_ok=True)
-    print('Saving traces...')
-    with open(temp_directory / 'simple_traces_getxwd.txt', 'w') as f:
-        f.write('# Traces generated using getxwd algorithm\n')
-        f.write('# Format: Order number, Trace coefficients, Width\n')
-        f.write('-' * 50 + '\n')
-        for i, (trace, width) in enumerate(zip(traces, widths)):
-            f.write(f'Order {i+1}\n')
-            f.write(f'Trace coefficients: {" ".join(map(str, trace))}\n')
-            f.write(f'Width: {width}\n')
-            f.write('-' * 40 + '\n')
-    
+    print(f'\nFound {len(result['orders'])} orders')
+    base_name = os.path.splitext(file_path)[0]
+    output_file=file_path.strip()
+    output_path = base_name + '_orders.json'
+    with open(output_path, 'w') as f:
+        json.dump(result, f, indent=4)
+
     print('Done!')
