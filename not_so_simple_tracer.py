@@ -13,6 +13,10 @@ from loaders import *
 import os
 import json
 
+import argparse
+import glob
+import time
+
 #==== My functions ====
 def gaussian(x, amplitude, center, sigma, offset):
     """Gaussian function for fitting"""
@@ -89,14 +93,13 @@ def estimate_width_getxwd(profile, y_positions, gauss=True, pixels=True):
         residuals = np.abs(fitted - profile)
         good_mask = residuals < 0.33 * amplitude
         
-        if np.sum(good_mask) > 7 and np.sum(good_mask) < len(profile):
+        if np.sum(good_mask) > 7 and np.sum(good_mask) <= len(profile):
             popt, _, _ = fit_gaussian(y_positions[good_mask], profile[good_mask])
             amplitude, center, sigma, offset, slope = popt
 
-        print(amplitude, center, sigma, offset, slope)
         
         # Profile y limits (truncate on 7 sigmas as Nikolay did)
-        z_max = 7.0
+        z_max = 2.0 # ПАРАМЕТР ДЛЯ ПОДГОНКИ 
 
         y_min_limit = center - z_max * sigma - 2
         y_max_limit = center + z_max * sigma + 2
@@ -106,32 +109,29 @@ def estimate_width_getxwd(profile, y_positions, gauss=True, pixels=True):
 
      #   yym1 = max(0, int(np.floor(center_local - z_max * sigma - 2)))
       #  yym2 = min(len(profile) - 1, int(np.ceil(center_local + z_max * sigma + 2)))
-        
+        pkfrac = 0.85
         if pixels:
-            width = yym2 - yym1 
+            width = pkfrac*(yym2 - yym1) 
         else:
-            width = (yym2 - yym1 + 1) / len(profile)
-        
-        #center = y_positions[int(center_local)] if int(center_local) < len(y_positions) else y_positions[len(y_positions)//2]
-        print(f"estimate_width_getxwd returned {width}, {center}, {popt} with gaussian fit")
+            width = pkfrac * (yym2 - yym1 + 1) / len(profile)
         return width, center, popt
 
     else:
         # Пороговая модель getxwd
         pmin = np.min(profile) #background trough counts
         pmax = np.max(profile) #order peak counts
-        threshold = np.sqrt(max(pmin, 1) * pmax) *0.9 # Геометрическое среднее
-        print(f"Threshold of the slice {threshold}")
+        threshold = np.sqrt(max(pmin, 1) * pmax) * 1.0 # Геометрическое среднее
         
         keep_mask = profile > threshold
 
         nkeep = np.sum(keep_mask)
+        pkfrac = 0.9
         
         if pixels:
             # IDL: xwd[0,0]=0.5+0.5*nkeep+1, xwd[1,0]=0.5+0.5*nkeep+1
-            width = (0.5+ nkeep +2)  # fraction of order to extract
+            width = pkfrac * (1.5 + 1.0*nkeep)  # fraction of order to extract
         else:
-            width = (0.5 + 0.5 * nkeep + 1) / len(profile) # fraction of order to extract
+            width = pkfrac * (0.5 + 0.5 * nkeep + 1) / len(profile) # fraction of order to extract
         
         # Оценка центра как среднего значения пикселей выше порога
         if nkeep > 0:
@@ -140,7 +140,6 @@ def estimate_width_getxwd(profile, y_positions, gauss=True, pixels=True):
             center = y_positions[int(center_local)] if int(center_local) < len(y_positions) else y_positions[len(y_positions)//2]
         else:
             center = y_positions[len(y_positions)//2]
-    print(f"estimate_width_getxwd returned {width}, {center} without gaussian fit")
     return width, center
 
 def plot_vertical_profile(profile, peaks=None, output_dir=None):
@@ -163,10 +162,10 @@ def plot_vertical_profile(profile, peaks=None, output_dir=None):
     plt.ylabel('Median intensity')
     plt.grid(True, alpha=0.3)
     plt.legend()
+     #plt.show()
     
     if output_dir:
         plt.savefig(output_dir / 'vertical_profile.pdf')
-    plt.show()
     
     return profile
 
@@ -174,7 +173,6 @@ def plot_order_fit(image, x, profile, y_coordinates, order_num, width_getxwd, fi
     """Plot order profile fit at a specific position"""
     plt.figure(figsize=(15, 5))
     
-    print(f"Image shape for coodinate setup y_end {image.shape[0]}, x_end {image.shape[1]}")
     # Plot 1: Image section
     plt.subplot(131)
     y_center = y_coordinates[len(profile)//2]  # Center of the profile
@@ -182,9 +180,6 @@ def plot_order_fit(image, x, profile, y_coordinates, order_num, width_getxwd, fi
     y_end = min(image.shape[0], int(y_center + 50))
     x_start = max(0, x - 100)
     x_end = min(image.shape[1], x + 100)
-
-    print(f"""Coordinates for imshow at plot_order_fit are y_center={y_center}, 
-            y_start={y_start}, y_end={y_end}, x_start={x_start}, x_end={x_end}""")
 
     plt.imshow(image[y_start:y_end, x_start:x_end], aspect='auto', cmap='gray',
                extent=[x_start, x_end, y_end, y_start])
@@ -194,11 +189,9 @@ def plot_order_fit(image, x, profile, y_coordinates, order_num, width_getxwd, fi
     if fit_params is not None:
         width = width_getxwd  
         center_img = fit_params[1]
-        print(f"WIDTH FOR FIRST SUBPLOT. Params for plotting the fit (from fit_params). fit_params[2]: {fit_params[2]}, width (fit_params[2] * 2.355): {width}, width_getxwd: {width_getxwd}")
         plt.axhline(center_img - width/2, color='purple',ls=':', alpha=0.7, label='Gaussian_width')
         plt.axhline(center_img + width/2, color='purple',ls=':', alpha=0.7)
     else:
-        print(f"WIDTH FOR FIRST SUBPLOT. Params for plotting the fit (without gaussian). width_getxwd:{width_getxwd}, y_center:{y_center}")
         plt.axhline(y_center - width_getxwd/2, color='g',ls='--', label='getxwd width')
         plt.axhline(y_center + width_getxwd/2, color='g',ls='--')
     
@@ -249,13 +242,11 @@ def plot_order_fit(image, x, profile, y_coordinates, order_num, width_getxwd, fi
         plt.title('Width from getxwd')
     
     plt.tight_layout()
-    plt.show()
-    # plt.pause(1)
-    # plt.close()
+ #   plt.show()
+    #plt.pause(0.01)
+    plt.close()
 
 def find_order_boundaries(image, peaks,border_width=50):
-    """
-    """
     # 1. Аппроксимируем фон по краям изображения
     spatial_axis = np.arange(image.shape[0])
 
@@ -303,175 +294,427 @@ def find_order_boundaries(image, peaks,border_width=50):
         'background_model': (slope, intercept)
     }
 
-def trace_orders(image, n_orders=None, getxwd_gauss=True, smooth=False, smooth_along=False, smooth_sigma=1.0, plot=False):
-
-    print("Step 1: Analyzing vertical profile...")
-    vertical_profile = np.median(image, axis=1)
-    
-    if smooth:
-        vertical_profile = gaussian_filter1d(vertical_profile, sigma=smooth_sigma)
-        print(f"Applied Gaussian smoothing with sigma={smooth_sigma}")
-
-    # Find peaks
-    prominence = np.percentile(vertical_profile, 25) 
-    print(f"prominence: {prominence}")
-    peaks, properties = find_peaks(vertical_profile, prominence=prominence, width=4)
-    
-    # Отбираем нужное количество порядков
-    if n_orders is not None and len(peaks) > n_orders:
-        # Take n_orders strongest peaks
-        peak_heights = vertical_profile[peaks]
-        strongest_indices = np.argsort(peak_heights)[-n_orders:]
-        peaks = np.sort(peaks[strongest_indices])
-    
-    plot_vertical_profile(vertical_profile, peaks)
-    
-    # Обработка каждого отдельного порядка
-    traces = []
-    widths = []
-
-    # Оцениваем размеры окон
-    bounds = find_order_boundaries(image, peaks, border_width=50)
-    plt.figure(figsize=(12, 6))
-
-    # Пространственный профиль (усредненный по длинам волн)
-    profile = image.mean(axis=1)
-    plt.plot(profile, label='Средний профиль')
-
-    # Фоновая модель
-    bg_line = bounds['background_model'][0] * np.arange(len(profile)) + bounds['background_model'][1]
-    plt.plot(bg_line, '--', label='Модель фона')
-  
-    # Внутренние границы
-    for bound in bounds['boundaries']:
-        plt.axvline(x=bound, color='g', linestyle=':', alpha=0.7, 
-                    label='Границы слайсов' if bound == bounds['boundaries'][0] else "")
-
-    plt.title("Определение границ по фону")
-    plt.xlabel("Пространственная ось (пиксели)")
-    plt.ylabel("Интенсивность")
-    plt.legend()
-    plt.show()
-    
-    for order_num, peak in enumerate(peaks, 1):
-        print(f"\nProcessing Order {order_num}...")
-        centers = []
-        order_widths = []
-        x_positions = []
+def trace_orders(flat_file="s_flat.fits", 
+                          spec_list="TEMP/obj_crr_bt_list.txt",
+                          output_dir="traced_orders",
+                          n_orders=14,
+                          n_points_for_fit = 10,
+                          smooth=True, 
+                          smooth_sigma=1.0, 
+                          getxwd_gauss=True,
+                          plot=True, 
+                          save_plots=False, 
+                          overwrite=False,
+                          save_format='json'):  # 'json', 'fits', or 'both'
+        """
+        Пакетная трассировка спектральных порядков
         
-        # Sample points along dispersion
-        for x in range(0, image.shape[1], 460): #TODO сделать произвольный шаг трассировки (4600/шаг)
-            print(f"x = {x}")
-            # Используем оцененные размеры окон
-            x_start = max(0, x - image.shape[1] // 460)
-            x_end = min(image.shape[1], x + image.shape[1] // 460)
-            y_start = bounds['boundaries'][order_num -1] 
-            y_end = bounds['boundaries'][order_num] 
-
-            # y_start = max(0, peak - 15)
-            # y_end = min(image.shape[0], peak + 15)
+        Parameters:
+        -----------
+        flat_file : str
+            Путь к среднему флэт-кадру для определения границ порядков
+        spec_list : str
+            Файл со списком спектров для обработки
+        output_dir : str
+            Директория для сохранения результатов
+        n_orders : int, optional
+            Количество порядков (если None, автоопределение)
+        n_points_for_fit:
+            Количество узлов аппроксимации порядка
+        smooth : bool
+            Применить сглаживание к вертикальному профилю
+        smooth_sigma : float
+            Параметр сглаживания
+        getxwd_gauss : bool
+            Использовать гауссову аппроксимацию в getxwd
+        plot : bool
+            Показывать промежуточные графики
+        save_plots : bool
+            Сохранять графики на диск
+        overwrite : bool
+            Перезаписывать существующие файлы
+        save_format : str
+            Формат сохранения результатов ('json', 'fits', 'both')
+        """
+        
+        # Создаем директорию для результатов
+        output_path = Path(output_dir)
+        output_path.mkdir(exist_ok=True)
+        
+        if save_plots:
+            plots_path = output_path / "plots"
+            plots_path.mkdir(exist_ok=True)
+        
+        print("="*80)
+        print("ПАКЕТНАЯ ТРАССИРОВКА СПЕКТРАЛЬНЫХ ПОРЯДКОВ")
+        print("="*80)
+        
+        # ===============================================================
+        # ШАГ 1: Определение границ порядков по флэт-кадру
+        # ===============================================================
+        print(f"\nШаг 1: Анализ флэт-кадра {flat_file}...")
+        
+        try:
+            flat_data, flat_header, _ = fits_loader(flat_file)
+            print(f"Загружен флэт-кадр размером {flat_data.shape}")
+        except Exception as e:
+            print(f"ОШИБКА: Не удалось загрузить флэт-кадр {flat_file}: {e}")
+            return
+        
+        # Анализируем вертикальный профиль
+        print("Анализ вертикального профиля...")
+        vertical_profile = np.median(flat_data, axis=1)
+        
+        if smooth:
+            vertical_profile = gaussian_filter1d(vertical_profile, sigma=smooth_sigma)
+            print(f"Применено сглаживание с sigma={smooth_sigma}")
+        
+        # Поиск пиков (спектральных порядков)
+        prominence = np.percentile(vertical_profile, 25)
+        peaks, properties = find_peaks(vertical_profile, prominence=prominence, width=4)
+        
+        # Отбираем нужное количество порядков
+        if n_orders is not None and len(peaks) > n_orders:
+            peak_heights = vertical_profile[peaks]
+            strongest_indices = np.argsort(peak_heights)[-n_orders:]
+            peaks = np.sort(peaks[strongest_indices])
+        
+        print(f"Найдено {len(peaks)} спектральных порядков: {peaks}")
+        
+        # Визуализация найденных порядков
+        if plot:
+            plot_vertical_profile(vertical_profile, peaks, 
+                                output_dir=plots_path if save_plots else None)
+        
+        # Определение границ порядков
+        print("Определение границ спектральных порядков...")
+        bounds = find_order_boundaries(flat_data, peaks, border_width=50)
+        
+        print(f"Границы порядков: {bounds['boundaries']}")
+        
+        # Визуализация границ
+        if plot:
+            plt.figure(figsize=(12, 6))
+            profile = flat_data.mean(axis=1)
+            plt.plot(profile, label='Средний профиль')
             
-            local_profile = np.median(image[y_start-1:y_end+1, x_start:x_end], axis=1)
-            if smooth_along:
-                local_profile = gaussian_filter1d(local_profile, sigma=1) ## EXPERIMENTAL
-            y_positions = np.arange(y_start-1, y_end+1)
-           
-            # Используем алгоритм getxwd
+            bg_line = bounds['background_model'][0] * np.arange(len(profile)) + bounds['background_model'][1]
+            plt.plot(bg_line, '--', label='Модель фона')
+            
+            for i, bound in enumerate(bounds['boundaries']):
+                plt.axvline(x=bound, color='g', linestyle=':', alpha=0.7, 
+                           label='Границы порядков' if i == 0 else "")
+            
+            for i, peak in enumerate(peaks):
+                plt.axvline(x=peak, color='r', linestyle=':', alpha=0.8,
+                           label='Центры порядков' if i == 0 else "")
+            
+            plt.title("Определение границ спектральных порядков")
+            plt.xlabel("Пространственная ось (пиксели)")
+            plt.ylabel("Интенсивность")
+            plt.legend()
+            
+            if save_plots:
+                plt.savefig(plots_path / "order_boundaries.pdf")
+                plt.pause(1)
+                plt.close()
+        
+        # ===============================================================
+        # ШАГ 2: Сохранение границ порядков
+        # ===============================================================
+        print(f"\nШаг 2: Сохранение границ порядков...")
+        
+        boundaries_data = {
+            'metadata': {
+                'flat_file': flat_file,
+                'n_orders': len(peaks),
+                'peaks': [float(p) for p in peaks],
+                'boundaries': [float(b) for b in bounds['boundaries']],
+                'background_model': bounds['background_model']
+            }
+        }
+        
+        boundaries_file = output_path / "order_boundaries.json"
+        with open(boundaries_file, 'w') as f:
+            json.dump(boundaries_data, f, indent=4)
+        print(f"Границы порядков сохранены в {boundaries_file}")
+        
+        # ===============================================================
+        # ШАГ 3: Загрузка списка спектров
+        # ===============================================================
+        print(f"\nШаг 3: Загрузка списка спектров из {spec_list}...")
+        
+        try:
+            with open(spec_list, 'r') as f:
+                spectrum_files = [line.strip() for line in f if line.strip()]
+            print(f"Найдено {len(spectrum_files)} спектров для обработки")
+        except Exception as e:
+            print(f"ОШИБКА: Не удалось загрузить список спектров {spec_list}: {e}")
+            return
+        
+        # ===============================================================
+        # ШАГ 4: Пакетная обработка спектров
+        # ===============================================================
+        print(f"\nШаг 4: Обработка спектров...")
+        
+        processed_count = 0
+        failed_count = 0
+        
+        for spec_idx, spec_file in enumerate(spectrum_files, 1):
+            print(f"\n{'='*60}")
+            print(f"Обработка спектра {spec_idx}/{len(spectrum_files)}: {spec_file}")
+            print(f"{'='*60}")
+            
+            start_time = time.time()
+            
+            # Проверяем, нужно ли перезаписывать
+            base_name = Path(spec_file).stem
+            output_json = output_path / f"{base_name}_traced.json"
+            output_fits = output_path / f"{base_name}_traced.fits"
+            
+            if not overwrite and (output_json.exists() or output_fits.exists()):
+                print(f"ПРОПУСК: Файл уже обработан (используйте --overwrite для перезаписи)")
+                continue
+
             try:
-                if getxwd_gauss:
-                    width_getxwd, center_getxwd, local_popt = estimate_width_getxwd(
-                        local_profile, y_positions, 
-                        gauss=getxwd_gauss)
-                    print(f"  getxwd at x={x}: width={width_getxwd:.2f}, center={center_getxwd:.2f}")
-                    
-                    if plot:
-                        # Plot результат
-                        plot_order_fit(image, x, local_profile, y_positions,
-                                 order_num, width_getxwd,fit_params=local_popt)  
-                else:
-                    width_getxwd, center_getxwd = estimate_width_getxwd(
-                        local_profile, y_positions, 
-                        gauss=getxwd_gauss)
-                    print(f"  getxwd at x={x}: width={width_getxwd:.2f}, center={center_getxwd:.2f}")
-                    
-                    if plot:
-                        # Plot результат
-                        plot_order_fit(image, x, local_profile, y_positions,
-                                     order_num, width_getxwd, fit_params=None)
+                # Загрузка спектра
+                spec_data, spec_header, _ = fits_loader(spec_file)
+                print(f"Загружен спектр размером {spec_data.shape}")
                 
-                # Store results
-                centers.append(center_getxwd)
-                order_widths.append(width_getxwd)
-                x_positions.append(x)
+                # Трассировка каждого порядка
+                traced_orders = []
+                
+                for order_num, peak in enumerate(peaks, 1):
+                    print(f"\nТрассировка порядка {order_num}/{len(peaks)}...")
+
+                    centers = []
+                    order_widths = []
+                    x_positions = []
+                    
+                    # Определяем границы для этого порядка
+                    y_start = bounds['boundaries'][order_num - 1]
+                    y_end = bounds['boundaries'][order_num]
+                    
+                    # Трассировка вдоль дисперсионного направления
+                    step_size = max(1, spec_data.shape[1] // n_points_for_fit)  # 10 точек по умолчанию
+                   
+                    for x in range(0, spec_data.shape[1], step_size):
+                        try:
+                            # Окно для усреднения
+                            x_start = max(0, x - step_size // 2)
+                            x_end = min(spec_data.shape[1], x + step_size // 2)
+                           
+                            # Извлекаем локальный профиль
+                            local_profile = np.median(spec_data[y_start:y_end, x_start:x_end], axis=1)
+                            y_positions = np.arange(y_start, y_end)
+                    
+                            # Применяем getxwd для определения центра и ширины
+                            if getxwd_gauss:
+                                width_getxwd, center_getxwd, local_popt = estimate_width_getxwd(
+                                    local_profile, y_positions, gauss=getxwd_gauss)
+                                
+                                if plot and x % (step_size * 5) == 0:  # Показываем каждый 5-й результат
+                                    plot_order_fit(spec_data, x, local_profile, y_positions,
+                                                 order_num, width_getxwd, fit_params=local_popt)
+                            else:
+                                width_getxwd, center_getxwd = estimate_width_getxwd(
+                                    local_profile, y_positions, gauss=getxwd_gauss)
+                                
+                                if plot and x % (step_size * 5) == 0:  # Показываем каждый 5-й результат
+                                    plot_order_fit(spec_data, x, local_profile, y_positions,
+                                                 order_num, width_getxwd, fit_params=None)
+                            
+                            centers.append(center_getxwd)
+                            order_widths.append(width_getxwd)
+                            x_positions.append(x)
+                            
+                        except Exception as e:
+                            print(f"  ОШИБКА в позиции x={x}: {e}")
+                            continue
+                        
+                    # ===============================================================
+                    # ШАГ 5: Определение центра и ширины с помощью Chebyshev
+                    # ===============================================================
+                    if len(centers) > 3:
+                        print(f"Аппроксимация порядка {order_num} полиномом Чебышева...")
+                        
+                        # Полиномиальная аппроксимация центров
+                        trace_coeffs = chebfit(x_positions, centers, deg=2)
+                        width = np.median(order_widths)
+                        
+                        # Генерируем полную трассу
+                        x_full = np.arange(spec_data.shape[1])
+                        y_center_full = chebval(x_full, trace_coeffs)
+                        y_upper_full = y_center_full - width / 2
+                        y_lower_full = y_center_full + width / 2
+                        
+                        order_data = {
+                            'order_number': int(order_num),
+                            'peak_position': int(peak),
+                            'median_width': float(width),
+                            'chebyshev_coeffs': trace_coeffs.tolist(),
+                            'trace_points': {
+                                'x_measured': [float(x) for x in x_positions],
+                                'y_measured': [float(y) for y in centers],
+                                'widths_measured': [float(w) for w in order_widths]
+                            },
+                            'trace_full': {
+                                'x': [int(x) for x in x_full],
+                                'y_center': [float(y) for y in y_center_full],
+                                'y_upper': [float(y) for y in y_upper_full],
+                                'y_lower': [float(y) for y in y_lower_full]
+                            }
+                        }
+                        
+                        traced_orders.append(order_data)
+
+                        print(f"  Порядок {order_num}: медианная ширина = {width:.2f} пикс")
+                        print(f"  Коэффициенты Чебышева: {trace_coeffs}")
+
+                    else:
+                        print(f"  ПРЕДУПРЕЖДЕНИЕ: Недостаточно точек для порядка {order_num}")
+                        
+                        # Визуализация результата трассировки
+                if plot:
+                    z_scale = ZScaleInterval()
+                    z1, z2 = z_scale.get_limits(spec_data)
+                    
+                    plt.figure(figsize=(15, 8))
+                    plt.imshow(spec_data, aspect='auto', cmap='coolwarm', vmin=z1, vmax=z2)
+                    
+                    for order in traced_orders:
+                        # Показываем измеренные точки
+                        plt.scatter(order['trace_points']['x_measured'], order['trace_points']['y_measured'], c='red', s=50, 
+                                    label='Измеренные центры' if i == 0 else "", alpha=0.8, zorder=5)
+                    
+                        # Показываем аппроксимацию
+                        plt.plot(order['trace_full']['x'], order['trace_full']['y_center'], 'yellow', linewidth=2, 
+                                label='Аппроксимация Чебышева' if i == 0 else "")
+                        plt.plot(order['trace_full']['x'], order['trace_full']['y_upper'], 'cyan', linewidth=1, alpha=0.8)
+                        plt.plot(order['trace_full']['x'], order['trace_full']['y_lower'], 'cyan', linewidth=1, alpha=0.8)
+                        
+                    plt.title(f'{base_name} traced slices')
+                    plt.xlabel('X пиксель')
+                    plt.ylabel('Y пиксель')
+                    plt.legend()
+                    plt.pause(1)
+                    plt.close()
+                        
+                    if save_plots:
+                        plt.savefig(plots_path / f"{base_name}_traces.pdf")
+                                           
+                
+                # ===============================================================
+                # ШАГ 6: Сохранение результатов
+                # ===============================================================
+                print(f"\nСохранение результатов для {spec_file}...")
+                
+                result_data = {
+                    'metadata': {
+                        'source_file': spec_file,
+                        'processing_time': float(time.time() - start_time),
+                        'n_orders_traced': int(len(traced_orders)),
+                        'parameters': {
+                            'getxwd_gauss': getxwd_gauss,
+                            'smooth': smooth,
+                            'smooth_sigma': smooth_sigma
+                        }
+                    },
+                    'orders': traced_orders
+                }
+                
+                if save_format in ['json', 'both']:
+                    with open(output_json, 'w') as f:
+                        json.dump(result_data, f, indent=4)
+                    print(f"Сохранено в JSON: {output_json}")
+                
+                if save_format in ['fits', 'both']:
+                    # Создаем маску порядков
+                    orders_mask = np.zeros_like(spec_data, dtype=np.int16)
+                    
+                    for order_data in traced_orders:
+                        order_num = order_data['order_number']
+                        x_coords = np.array(order_data['trace_full']['x'])
+                        y_upper = np.array(order_data['trace_full']['y_upper'])
+                        y_lower = np.array(order_data['trace_full']['y_lower'])
+                        
+                        for x in x_coords:
+                            if 0 <= x < orders_mask.shape[1]:
+                                y_start = max(0, int(np.floor(y_upper[x])))
+                                y_end = min(orders_mask.shape[0], int(np.ceil(y_lower[x])))
+                                orders_mask[y_start:y_end, x] = order_num
+                    
+                    # Сохраняем в FITS с дополнительным слоем
+                    primary_hdu = pyfits.PrimaryHDU(spec_data, header=spec_header)
+                    mask_hdu = pyfits.ImageHDU(orders_mask, name='ORDERS_MASK')
+                    
+                    # Добавляем метаданные в заголовок
+                    mask_hdu.header['EXTNAME'] = 'ORDERS_MASK'
+                    mask_hdu.header['NORDERS'] = len(traced_orders)
+                    mask_hdu.header['TRACEALG'] = 'GETXWD+CHEBYSHEV'
+                    
+                    hdul = pyfits.HDUList([primary_hdu, mask_hdu])
+                    hdul.writeto(output_fits, overwrite=overwrite)
+                    print(f"Сохранено в FITS: {output_fits}")
+                
+                processed_count += 1
                 
             except Exception as e:
-                print(f" getxwd failed at x={x}: {e}")
+                print(f"ОШИБКА при обработке {spec_file}: {e}")
+                failed_count += 1
+                input('Продолжить обработку?....')
                 continue
-                       
-        if len(centers) > 3:
-            fit_result = {
-                    'metadata': {},
-                    'orders': []
-            }
-            # Fit polynomial to centers
-            trace_coeffs = chebfit(x_positions, centers, deg=2)
-            width = np.median(order_widths)
-            
-            traces.append(trace_coeffs)
-            widths.append(width)
-            
-            print(f"Order {order_num}: median width = {width:.2f}")
-            
- 
-            x_fit = np.arange(image.shape[1])
-            y_fit = chebval(x_fit, trace_coeffs)
+        
+        # ===============================================================
+        # Финальная статистика
+        # ===============================================================
+        print(f"\n{'='*80}")
+        print("ПАКЕТНАЯ ОБРАБОТКА ЗАВЕРШЕНА")
+        print(f"{'='*80}")
+        print(f"Успешно обработано: {processed_count}")
+        print(f"Ошибок: {failed_count}")
+        print(f"Результаты сохранены в: {output_path}")
+        print(f"Границы порядков: {boundaries_file}")
+        
+        if save_plots:
+            print(f"Графики сохранены в: {plots_path}")
 
-            trace_upper = y_fit - width / 2
-            trace_lower = y_fit + width / 2
-
-            order_data = {
-                'slice_number': order_num,
-                'width': float(width),
-                'boundaries': {
-                    'x': x_fit.tolist(),
-                    'y_center': y_fit.tolist(),
-                    'y_upper': trace_upper.tolist(),
-                    'y_lower': trace_lower.tolist()
-                }
-            }
-            fit_result['orders'].append(order_data)
-
-
-             # Plot trace
-            if plot:          
-                z_scale = ZScaleInterval()
-                z1,z2 = z_scale.get_limits(image)
-                plt.figure(figsize=(12, 6))
-                plt.imshow(image, aspect='auto', cmap='coolwarm',vmin=z1, vmax=z2)
-                plt.plot(x_positions, centers, 'r.', label='Measured centers', markersize=8)
-                plt.plot(x_fit, y_fit, 'b-', label='Polynomial fit', linewidth=1.5)
-                plt.plot(x_fit, trace_upper, 'y--',linewidth=1,alpha=0.8)
-                plt.plot(x_fit, trace_lower, 'y--',linewidth=1,alpha=0.8)
-                plt.title(f'Order {order_num} Trace (Width: {width:.2f} pixels)')
-                plt.xlabel('X pixel')
-                plt.ylabel('Y pixel')
-                plt.legend()
-                plt.show()
-    
-    return fit_result
 
 if __name__ == '__main__':
-    # Load flat field
-    file_path = ('./s_flat.fits')
-    flat_data, flat_header,_ = fits_loader(file_path)
-    result = trace_orders(flat_data, n_orders=14, smooth=True,
-                                  getxwd_gauss=False, smooth_sigma=3)
+  
+    # ===============================================================
+    # Основной запуск
+    # ===============================================================
+    parser = argparse.ArgumentParser(description='Пакетная трассировка спектральных порядков')
+    parser.add_argument('--flat', default='s_flat.fits', help='Флэт-кадр для определения границ')
+    parser.add_argument('--list', default='TEMP/obj_crr_bt_list.txt', help='Список спектров')
+    parser.add_argument('--output', default='traced_orders', help='Директория для результатов')
+    parser.add_argument('--n_orders', type=int, help='Количество порядков')
+    parser.add_argument('--no-gauss', action='store_false', dest='getxwd_gauss', 
+                       help='Не использовать гауссову аппроксимацию')
+    parser.add_argument('--no-plot', action='store_false', dest='plot',
+                       help='Отключить визуализацию')
+    parser.add_argument('--save-plots', action='store_true',
+                       help='Сохранять графики на диск')
+    parser.add_argument('--overwrite', action='store_true',
+                       help='Перезаписывать существующие файлы')
+    parser.add_argument('--format', choices=['json', 'fits', 'both'], default='json',
+                       help='Формат сохранения результатов')
     
-    print(f'\nFound {len(result['orders'])} orders')
-    base_name = os.path.splitext(file_path)[0]
-    output_file=file_path.strip()
-    output_path = base_name + '_orders.json'
-    with open(output_path, 'w') as f:
-        json.dump(result, f, indent=4)
-
-    print('Done!')
+    args = parser.parse_args()
+    
+    # Запуск пакетной обработки
+    trace_orders(
+        flat_file=args.flat,
+        spec_list=args.list,
+        output_dir=args.output,
+        n_orders=args.n_orders,
+        n_points_for_fit = 5,
+        getxwd_gauss=args.getxwd_gauss,
+        plot=args.plot,
+        save_plots=args.save_plots,
+        overwrite=args.overwrite,
+        save_format=args.format
+    )
+    
+    print('\nDone!')
