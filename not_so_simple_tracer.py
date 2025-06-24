@@ -19,7 +19,6 @@ import time
 
 #==== My functions ====
 def gaussian(x, amplitude, center, sigma, offset):
-    """Gaussian function for fitting"""
     return amplitude * np.exp(-(x - center)**2 / (2 * sigma**2)) + offset
 
 def super_gaussian(x, amplitude, center, sigma, power, offset):
@@ -30,6 +29,9 @@ def gaussian_pisk(x, amplitude, center, sigma, offset, slope):
     z = (x - center) / sigma
     ez = np.exp(-z**2 / 2.0) * (np.abs(z) <= 7.0)
     return amplitude * ez + offset + slope * x
+
+def moffat_profile(radius, intensity, width, slope, background, center):
+     return intensity * (1 + ((radius - center) / width)**2)**(-slope) + background
 
 
 # ========== REDUCE GETXWD to detect slice bounds ==========
@@ -242,8 +244,8 @@ def plot_order_fit(image, x, profile, y_coordinates, order_num, width_getxwd, fi
         plt.title('Width from getxwd')
     
     plt.tight_layout()
-    plt.show()
-    #plt.pause(0.01)
+    #plt.show()
+    plt.pause(0.01)
     plt.close()
 
 def find_order_boundaries(image, peaks,border_width=50):
@@ -629,7 +631,8 @@ def trace_single_spectrum(spec_file, peaks, bounds,
             
             if save_plots and plots_path:
                 plt.savefig(plots_path / f"{base_name}_traces.pdf")
-            plt.show()
+            plt.pause(0.01)
+            plt.close()
         
         # Формируем результаты
         result_data = {
@@ -883,7 +886,17 @@ if __name__ == '__main__':
     
     args = parser.parse_args()
     
-    bounds = find_order_boundaries_from_flat('s_flat.fits', smooth_sigma=3)
-    trace_single_spectrum('o063_CRR_bt.fits', peaks=bounds['peaks'],bounds=bounds['bounds'],  n_points_for_fit=10)
+    trace_orders(flat_file="s_flat.fits", 
+                spec_list="TEMP/obj_crr_bt_list.txt",
+                output_dir="traced_orders",
+                n_orders=14,
+                n_points_for_fit=10,
+                smooth=True, 
+                smooth_sigma=1.0, 
+                getxwd_gauss=False,
+                plot=True, 
+                save_plots=True, 
+                overwrite=True,
+                save_format='json')
 
     print('\nDone!')

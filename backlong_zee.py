@@ -3,8 +3,9 @@ import matplotlib.pyplot as plt
 import astropy.io.fits as pyfits
 import os
 from astropy.visualization import ZScaleInterval
+from scipy.ndimage import median_filter
 
-def subtract_scattered_light(dir_name, list_name, out_list_name, border_width=60, plot=False):
+def subtract_scattered_light(dir_name, list_name, out_list_name, border_width=90, plot=False):
     """
     Вычитает рассеянный свет из изображения, аппроксимируя фон линейным трендом в каждом столбце
     
@@ -57,11 +58,23 @@ def subtract_scattered_light(dir_name, list_name, out_list_name, border_width=60
                     background[:, col] = slope * y + intercept
         
                     # 5. Вычитаем фон (с защитой от отрицательных значений)
-                    corrected[:, col] = data[:, col] - background[:, col]
-                    corrected[:, col] = np.clip(corrected[:, col], 0, None)
+ #                   corrected[:, col] = data[:, col] - background[:, col]
+ #                   corrected[:, col] = np.clip(corrected[:, col], 0, None)
+
+                # 6. Медианная фильтрация фона background
+                rady = 0 
+                radx = 100
+                thresh = 0.0
+                kernel = np.ones((2*rady+1, 2*radx+1), bool)
+                bg_filtered = median_filter(background,footprint=kernel)
+                diff = np.abs(bg_filtered - background)
+                mask = diff > thresh
+                bg_fil = np.where(mask, bg_filtered, background)
+                corrected = data - bg_fil
+               # corrected = np.clip(corrected, 0, None)
     
                 pyfits.writeto(out_name, corrected, header, overwrite=True)
-                pyfits.writeto(out_bg_name, background, header, overwrite=True)
+                pyfits.writeto(out_bg_name, bg_fil, header, overwrite=True)
             print(out_name, file=f_out)
             print(f"Processed and saved: {out_name}")
             if plot==True:
@@ -69,27 +82,32 @@ def subtract_scattered_light(dir_name, list_name, out_list_name, border_width=60
                 
                 plt.figure(figsize=(15, 5))
 
-                plt.subplot(131)
+                plt.subplot(141)
                 z1, z2 = z_scale.get_limits(data)
                 plt.imshow(data, cmap='coolwarm', aspect='auto', vmin=z1, vmax=z2)
                 plt.title("Original Image")
                 plt.colorbar()
 
-                plt.subplot(132)
-                plt.imshow(background, cmap='coolwarm', aspect='auto')
+                plt.subplot(142)
+                plt.imshow(bg_fil, cmap='coolwarm', aspect='auto')
                 plt.title("Scattered Light Model")
                 plt.colorbar()
 
                 z1, z2 = z_scale.get_limits(corrected)
-                plt.subplot(133)
+                plt.subplot(143)
                 plt.imshow(corrected, cmap='coolwarm', aspect='auto', vmin=z1, vmax=z2)
                 plt.title("Background Subtracted")
                 plt.colorbar()
 
+                plt.subplot(144)
+                plt.imshow(mask, cmap='coolwarm', aspect='auto')
+                plt.title("Bac mask")
+                plt.colorbar()
+
                 plt.tight_layout()
-                #plt.show()
-                plt.pause(3)
-                plt.close()
+                plt.show()
+                #plt.pause(3)
+                #plt.close()
     f.close()
     f_out.close()
 
@@ -114,8 +132,8 @@ if __name__ == "__main__":
     result = subtract_scattered_light(dir_name=temp_directory,
                                                      list_name=input_list,
                                                      out_list_name=output_list,
-                                                     plot=True,
-                                                     border_width=60)
+                                                     plot=False,
+                                                     border_width=90)
     if result == "Cleaned":
             print('Successfully subtracted background from object frames')
     else:
