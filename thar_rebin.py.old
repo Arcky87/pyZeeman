@@ -1,0 +1,164 @@
+import matplotlib.pyplot as plt
+import numpy as np
+from pathlib import Path
+from loaders import load_atlas_lines, fits_loader, load_traced_orders
+from visualize_trace import *
+from thar_finder import find_peaks_for_order, fit_dispersion_poly
+
+import pickle
+import argparse 
+
+def propagate_solution_to_all_orders(image_data, traced_data, atlas_lines, ref_order_info, peak_params, final_deg):
+    """
+    Переносит и уточняет дисперсионное решение с опорного порядка на все остальные.
+    """
+    print("\n" + "="*80)
+    print("     Перенос и уточнение дисперсионного решения")
+    print("="*80)
+    
+    ref_order_num = ref_order_info['order_num']
+    ref_disp_model = ref_order_info['model']
+    ref_peaks_pixels = np.array(ref_order_info['all_peaks_px'])
+    
+    all_solutions = {ref_order_num: ref_disp_model}
+    pixel_alignment_data = []
+    final_wavelength_fit_data = []
+
+    for order_info in traced_data['orders']:
+        target_order_num = order_info['order_number']
+        if target_order_num == ref_order_num:
+            continue
+
+        print(f"\n--- Обработка порядка №{target_order_num} ---")
+        
+        x_target, flux_target = extract_order(image_data, traced_data, target_order_num)
+        target_peaks = find_peaks_for_order(x_target, flux_target, peak_params)
+        print(f"  Найдено {len(target_peaks)} пиков в целевом порядке.")
+        
+        if len(target_peaks) < 10:
+            print("  ! Предупреждение: Найдено слишком мало пиков. Пропускаем порядок.")
+            continue
+
+        # --- Шаг 1: Собираем данные в СПИСКИ ---
+        matched_ref_pixels_list, matched_target_pixels_list = [], []
+        for ref_peak in ref_peaks_pixels:
+            candidates = target_peaks[np.abs(target_peaks - ref_peak) <= 3]
+            if len(candidates) > 0:
+                closest_idx = np.argmin(np.abs(candidates - ref_peak))
+                matched_ref_pixels_list.append(ref_peak)
+                matched_target_pixels_list.append(candidates[closest_idx])
+        
+        # --- ИСПРАВЛЕНИЕ 1: Преобразуем в МАССИВЫ ПОСЛЕ цикла ---
+        matched_ref_pixels = np.array(matched_ref_pixels_list)
+        matched_target_pixels = np.array(matched_target_pixels_list)
+
+        if len(matched_ref_pixels) < final_deg + 2:
+            print("  ! Ошибка: Недостаточно сопоставлений пиков для выравнивания. Пропускаем.")
+            continue
+
+        pixel_map_model = np.polynomial.Polynomial.fit(matched_target_pixels, matched_ref_pixels, 2)
+        initial_target_model = ref_disp_model(pixel_map_model)
+        pixel_map_residuals = matched_ref_pixels - pixel_map_model(matched_target_pixels)
+        pixel_alignment_data.append({'num': target_order_num, 'residuals': pixel_map_residuals, 'pixels': matched_target_pixels})
+        
+        print(f"  Уточнение решения по атласу (степень полинома: {final_deg})...")
+        predicted_lambdas = initial_target_model(target_peaks)
+        
+        # --- Шаг 2: Снова собираем данные в СПИСКИ ---
+        refit_pixels_list, refit_lambdas_list = [], []
+        identification_tolerance = 0.2
+        
+        for i, pred_lambda in enumerate(predicted_lambdas):
+            diffs = np.abs(atlas_lines - pred_lambda)
+            closest_atlas_idx = np.argmin(diffs)
+            
+            if diffs[closest_atlas_idx] < identification_tolerance:
+                refit_pixels_list.append(target_peaks[i])
+                refit_lambdas_list.append(atlas_lines[closest_atlas_idx])
+
+        # --- ИСПРАВЛЕНИЕ 2: Преобразуем в МАССИВЫ ПОСЛЕ цикла ---
+        refit_pixels = np.array(refit_pixels_list)
+        refit_lambdas = np.array(refit_lambdas_list)
+
+        print(f"  Найдено {len(refit_pixels)} надежных идентификаций с атласом.")
+
+        if len(refit_pixels) < final_deg + 2:
+            print("  ! Ошибка: Недостаточно линий для финальной калибровки. Пропускаем.")
+            continue
+            
+        try:
+            final_model = fit_dispersion_poly(refit_pixels, refit_lambdas, deg=final_deg)
+            all_solutions[target_order_num] = final_model
+            final_residuals = refit_lambdas - final_model(refit_pixels)
+            final_wavelength_fit_data.append({'num': target_order_num, 'residuals': final_residuals, 'lambdas': refit_lambdas})
+            final_rms = np.sqrt(np.mean(final_residuals**2))
+            print(f"  -> Финальная калибровка успешна. RMS = {final_rms:.5f} Å")
+        except Exception as e:
+            print(f"  ! Ошибка во время финальной подгонки: {e}")
+
+    # ... остальная часть функции для построения графиков остается без изменений ...
+    # ...
+
+    return all_solutions
+
+if __name__ == '__main__':
+    # --- Настройка парсера аргументов командной строки ---
+    parser = argparse.ArgumentParser(description="Применяет решение от эталонного порядка ко всем остальным.")
+    parser.add_argument("fits_file", type=str, help="Путь к исходному FITS-файлу.")
+    parser.add_argument("trace_file", type=str, help="Путь к JSON-файлу с трассировкой порядков.")
+    parser.add_argument("solution_file", type=str, help="Путь к .pkl файлу с решением для эталонного порядка.")
+    args = parser.parse_args()
+
+    FITS_FILE_PATH = Path(args.fits_file) 
+    TRACED_ORDERS_JSON_PATH = Path(args.trace_file)
+    SOLUTION_FILE_PATH = Path(args.solution_file)
+
+    ATLAS_FILE_PATH = Path('/data/Observations/test_pyzeeman/thar_lines_blue.txt')
+
+    peak_params = {
+    'prominence_sigma': 3,
+    'width_range': (2, 6),
+    'distance_pixels': 5,
+    }
+    FINAL_FIT_DEGREE = 5
+
+
+    # --- 1. Загружаем все необходимые данные ---
+    image_data, header, _ = fits_loader(FITS_FILE_PATH)
+    traced_data = load_traced_orders(TRACED_ORDERS_JSON_PATH)
+    atlas_lines = load_atlas_lines(ATLAS_FILE_PATH) 
+
+    try:
+        with open(SOLUTION_FILE_PATH, 'rb') as f:
+            ref_order_info = pickle.load(f)
+        print(f"\n-> Эталонное решение для порядка №{ref_order_info['order_num']} успешно загружено.")
+    except FileNotFoundError:
+        print(f"ОШИБКА: Файл с решением не найден: {SOLUTION_FILE_PATH}")
+    except Exception as e:
+        print(f"ОШИБКА: Не удалось прочитать файл с решением: {e}")
+
+    print("\n--- Запуск распространения решения на все порядки ---")
+    # Передаем всю структуру ref_order_info целиком
+    all_orders_calibrated = propagate_solution_to_all_orders(
+        image_data,
+        traced_data,
+        atlas_lines,
+        ref_order_info,
+        peak_params, 
+        final_deg=FINAL_FIT_DEGREE)
+    
+    if all_orders_calibrated:
+        print("\n-> Все порядки успешно откалиброваны.")
+                # Здесь вы можете добавить код для сохранения 'all_calibrated_solutions'
+        # в файл .pkl для дальнейшего использования (например, для ребининга спектра).
+        # Например:
+        # output_path = FITS_FILE_PATH.with_suffix('.all_solutions.pkl')
+        # with open(output_path, 'wb') as f:
+        #     pickle.dump(all_calibrated_solutions, f)
+        # print(f"Все решения сохранены в {output_path}")
+
+    else:
+        print("\n-> В процессе калибровки возникли ошибки.")
+    
+    plt.show()
+    

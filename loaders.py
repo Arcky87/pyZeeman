@@ -4,13 +4,16 @@ from astropy.io import fits
 import json
 from numpy.polynomial.chebyshev import chebval
 
-def list_loader(file_list_path, check_exist=True):
+def list_loader(file_list_path, check_exist=True,base_path=None):
     """
     Загружает список файлов из текстового файла
     
     Parameters:
         file_list_path: str - путь к файлу со списком
         check_exist: bool - проверять ли существование файлов
+        base_path: str/Path/None - базовая папка для относительных путей
+                Если None, используется родительская папка относительно файла со списком
+
         
     Returns:
         list - список путей к файлам
@@ -19,15 +22,30 @@ def list_loader(file_list_path, check_exist=True):
     if not file_list_path.exists():
         raise FileNotFoundError(f"File list {file_list_path} not found")
     
+    if base_path is None:
+        # Используем родительскую папку относительно файла со списком
+        base_path = file_list_path.parent.parent
+    else:
+        base_path = Path(base_path)
+
     with open(file_list_path, 'r') as f:
-        files = [line.strip() for line in f if line.strip()]
+        file_paths = [line.strip() for line in f if line.strip()]
+
+        resolved_files = []
+        for file_path in file_paths:
+            file_path = Path(file_path)
+            if file_path.is_absolute():
+               resolved_files.append(file_path)
+            else:
+                resolved_files.append(base_path / file_path)
     
     if check_exist:
-        missing = [f for f in files if not Path(f).exists()]
+        missing = [f for f in resolved_files if not f.exists()]
         if missing:
-            raise FileNotFoundError(f"Missing files: {missing[:3]}... ({len(missing)} total)")
+            missing_str = [str(f) for f in missing]
+            raise FileNotFoundError(f"Missing files: {missing_str[:3]}... ({len(missing)} total)")
     
-    return files
+    return [str(f) for f in resolved_files]
 
 def fits_loader(file_path, hdu_index=0, dtype=np.float32):
     """
@@ -64,7 +82,6 @@ def text_loader(file_path, delimiter=None, skip_rows=0, dtype=np.float32):
     file_path = Path(file_path)
     data = np.loadtxt(file_path, delimiter=delimiter, skiprows=skip_rows, dtype=dtype)
     return data, str(file_path)
-
 
 def load_traced_orders(json_file):
     """
@@ -363,10 +380,32 @@ def load_order_boundaries(boundaries_file):
     
     return boundaries_data
 
+def load_atlas_lines(file_path):
+    """
+    Загружает длины волн из текстового файла атласа.
+    Ожидаемый формат: строки, где длина волны - второй столбец.
+    Разделитель - пробел. Строки с '#' игнорируются.
+    """
+    try:
+        lines = np.loadtxt(
+            file_path, 
+            comments='#',
+            usecols=(1,) # Используем только второй столбец
+        )
+        print(f"Успешно загружено {len(lines)} линий из атласа '{file_path}'.")
+        # Возвращаем отсортированный массив на случай, если он не отсортирован
+        return np.sort(lines)
+    except FileNotFoundError:
+        print(f"Ошибка: Файл атласа не найден по пути: {file_path}")
+        return None
+    except Exception as e:
+        print(f"Ошибка при чтении файла атласа '{file_path}': {e}")
+        return None
+
 # Пример использования:
 if __name__ == '__main__':
     # Загрузка данных трассировки
-    traced = load_traced_orders('traced_orders/o012_CRR_bt_traced.json')
+    traced = load_traced_orders('/data/Observations/test_pyzeeman/traced_orders/o012_CRR_bt_traced.json')
     
     # Сводка
     summary = get_trace_summary(traced)
