@@ -8,7 +8,33 @@ from loaders import load_atlas_lines, fits_loader, load_traced_orders
 from visualize_trace import *
 from astropy.stats import mad_std
 from astropy.modeling import models,fitting 
+from astropy.nddata import StdDevUncertainty
+from specutils import Spectrum1D
+from specutils.manipulation import resample
+from astropy import units as u
+import json
 
+def calculate_ccd_error(flux_adu, gain, ron_e):
+    """
+    Вычисляет ошибку для каждого пикселя по уравнению шума ПЗС.
+    
+    Args:
+        flux_adu (np.ndarray): Массив потока в ADU.
+        gain (float): Коэффициент усиления в e-/ADU.
+        ron_e (float): Шум считывания в электронах (e-).
+        
+    Returns:
+        np.ndarray: Массив ошибок в тех же единицах, что и поток (ADU).
+    """
+    # Убедимся, что поток не отрицательный (после вычитания фона) для расчета фотонного шума
+    signal_e = np.maximum(0, flux_adu) * gain
+    
+    # Полный шум в электронах
+    noise_e = np.sqrt(signal_e + ron_e**2)
+    
+    # Возвращаем шум в единицах ADU
+    noise_adu = noise_e / gain
+    return noise_adu
 
 def find_peaks_for_order(x_coords, flux, peak_params):
     """
@@ -215,7 +241,7 @@ def fit_dispersion_poly(pixel_coords, lambda_coords, poly_deg):
     poly_model = np.poly1d(coeffs)
     return poly_model
 
-def finalize_and_resample(final_model, calib_points_dict, all_found_peaks, atlas_lines, x_coords_orig, flux_orig, order_num):
+def finalize_and_resample(final_model, calib_points_dict, all_found_peaks, atlas_lines, x_coords_orig, flux_orig, order_num,gain,ron_e):
     """
     Выполняет финальные шаги: создает ЕДИНЫЙ СВОДНЫЙ ГРАФИК с остатками для ВСЕХ линий, 
     пересчитывает спектр и сохраняет результаты.
@@ -226,11 +252,12 @@ def finalize_and_resample(final_model, calib_points_dict, all_found_peaks, atlas
     px_ident = np.array(list(calib_points_dict.keys()))
     lmb_ident = np.array(list(calib_points_dict.values()))
     unidentified_peaks_px = np.setdiff1d(all_found_peaks, px_ident)
-    #unidentified_peaks_lmb = final_model(unidentified_peaks_px)
+    residuals_ident = lmb_ident - final_model(px_ident)
+    rms = np.sqrt(np.mean(residuals_ident**2))
+
     if len(unidentified_peaks_px) > 0:
         unid_model_lmb = final_model(unidentified_peaks_px)
         unid_atlas_lmb = np.array([find_nearest_line(l, atlas_lines) for l in unid_model_lmb])
-
         residuals_unid = unid_atlas_lmb - unid_model_lmb
     else:
         unid_atlas_lmb = []
@@ -243,22 +270,22 @@ def finalize_and_resample(final_model, calib_points_dict, all_found_peaks, atlas
 
     # --- 2. АНАЛИЗ РЕШЕНИЯ И СОЗДАНИЕ ЕДИНОГО ГРАФИКА ---
     print("1. Анализ остатков и создание сводного графика решения...")
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 11), sharex=True,
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 9), sharex=True,
                                    gridspec_kw={'height_ratios': [3, 1]})
     fig.suptitle(f"Дисперсионное решение для порядка №{order_num}", fontsize=16)
 
     # --- Верхний график: Решение на фоне данных ---
-    ax1.scatter(unidentified_peaks_px, unid_atlas_lmb, c='gray', marker='|', s=100, 
-                lw=1.5, label=f"Найденные (не опознаны)")
+    
     x_smooth = np.linspace(x_min, x_max, 500)
     ax1.plot(x_smooth, final_model(x_smooth), 'r-', lw=2, label=f"Полином {final_model.order}-й степени")
     ax1.scatter(px_ident, lmb_ident, facecolors='none', edgecolors='blue', s=150, lw=1.5,
-                label=f"Опорные точки (опознаны)")
+                label=f"Опорные точки, RMS={rms:.5f}")
+    ax1.scatter(unidentified_peaks_px, unid_atlas_lmb, c='gray', marker='|', s=100, 
+                lw=1.5, label=f"Найденные (не опознаны)")
 
     ax1.set_ylabel("Длина волны (Å)"); ax1.set_xlim(x_min, x_max); ax1.set_ylim(lambda_min, lambda_max)
     ax1.grid(True, linestyle=':', which='both')
     
-    rms = np.sqrt(np.mean((lmb_ident - final_model(px_ident))**2))
     info_text = (f"RMS ошибки (по опорным точкам): {rms:.5f} Å\n"
                  f"Точек в решении: {len(px_ident)}\n"
                  f"Степень полинома: {final_model.order}")
@@ -268,9 +295,7 @@ def finalize_and_resample(final_model, calib_points_dict, all_found_peaks, atlas
 
     # --- Нижний график: Остатки для ВСЕХ найденных линий ---
     ax2.axhline(0, color='red', linestyle='--', lw=1)
-
     # Остатки для ОПОРНЫХ точек (Истинная λ - Модельная λ)
-    residuals_ident = lmb_ident - final_model(px_ident)
     ax2.scatter(px_ident, residuals_ident, marker='x', color='blue', s=70, lw=1.5,
                 label='Опорные точки')
     
@@ -293,36 +318,51 @@ def finalize_and_resample(final_model, calib_points_dict, all_found_peaks, atlas
     if user_choice == 'y':
         print("\n--- Финализация и сохранение результатов ---")
         print("\n1. Переинтерполяция спектра на линейную сетку длин волн...")
-        dispersion_func = final_model.deriv()
-        cdelt1 = np.min(dispersion_func(x_coords_orig))
-        crval1 = final_model(x_coords_orig[0])
-        lambda_end_resample = final_model(x_coords_orig[-1])
-        lambda_new = np.arange(crval1, lambda_end_resample, cdelt1)
-        x_resampled = np.interp(lambda_new, final_model(x_coords_orig), x_coords_orig)
-        flux_spline = CubicSpline(x_coords_orig, flux_orig)
-        flux_resampled = flux_spline(x_resampled)
-        fig_res, ax_res = plt.subplots(figsize=(15, 7))
-        ax_res.plot(lambda_new, flux_resampled, label=f"Линеаризованный спектр (порядок {order_num})")
-        ax_res.set_title(f"Линеаризованный спектр - Порядок №{order_num}")
-        ax_res.set_xlabel("Длина волны (Å)"); ax_res.set_ylabel("Поток (ADU)")
-        ax_res.grid(True, linestyle='--', alpha=0.6); ax_res.legend(); plt.tight_layout(); plt.show()
 
-        print("\n2. Сохранение параметров WCS...")
-        crpix1 = 1.0
-        wcs_filename = f"order_{order_num}_wcs_keywords.txt"
+        CRPIX1 = 1.0      
+        CRVAL1 = final_model(x_coords_orig[0])
+        NAXIS1 = len(x_coords_orig)
+        lambda_start = final_model(x_coords_orig[0])
+        lambda_end = final_model(x_coords_orig[-1])
+        CDELT1 = (lambda_end - lambda_start) / (NAXIS1 - 1)
+       # dispersion_func = final_model.deriv()
+       # CDELT1 = np.min(np.abs(dispersion_func(x_coords_orig)))
+        target_dispersion = (CRVAL1 + (np.arange(NAXIS1) - (CRPIX1 - 1)) * CDELT1) * u.AA
+        
+        # ПЗС-ошибки по потокам считаются по заданным GAIN, RON
+        error_adu = calculate_ccd_error(flux_orig, gain, ron_e)
+        uncertainty = StdDevUncertainty(error_adu * u.adu)
+# Готовим монотонную сетку для specutils
+        original_wavelengths = final_model(x_coords_orig) * u.AA
+        sort_indices = np.argsort(original_wavelengths)
+
+        # Создаем объект Spectrum1D. Важно: сетка должна быть строго монотонной.
+        input_spectrum = Spectrum1D(
+            flux=flux_orig[sort_indices] * u.adu,
+            spectral_axis=original_wavelengths[sort_indices],
+            uncertainty=uncertainty[sort_indices]
+        )
+
+        flux_resampler = resample.FluxConservingResampler()
+        resampled_spectrum = flux_resampler(input_spectrum, target_dispersion)
+
+        print("\n2. Сохранение результатов линеаризации опорного спектра...")
+        wcs_filename = f"order_{order_num}_wcs_standard.txt"
         with open(wcs_filename, 'w') as f:
-            f.write(f"# FITS WCS keywords for order {order_num}\n")
-            f.write(f"CRVAL1 = {crval1:.8f}\n")
-            f.write(f"CDELT1 = {cdelt1:.8f}\n")
-            f.write(f"CRPIX1 = {crpix1}\n")
-        print(f"   -> Параметры сохранены в файл: {wcs_filename}")
+            f.write("# FITS WCS standard keywords defined from reference spectrum\n")
+            f.write(f"NAXIS1 = {NAXIS1}\n")
+            f.write(f"CRPIX1 = {CRPIX1}\n")
+            f.write(f"CRVAL1 = {CRVAL1:.8f}\n")
+            f.write(f"CDELT1 = {CDELT1:.8f}\n")
+        print(f"  -> Стандартные параметры WCS сохранены в: {wcs_filename}")
+        
         
         return True  # <--- Возвращаем True, если пользователь согласен
     else:
         print("-> Отмена. Возврат в меню калибровки...")
         return False # <--- Возвращаем False, если пользователь хочет попробовать снова
 
-def interactive_wavelength_calibration(found_peaks, atlas_lines, ax_spectrum, x_coords_orig, flux_orig, order_num):
+def interactive_wavelength_calibration(found_peaks, atlas_lines, ax_spectrum, x_coords_orig, flux_orig, order_num,gain,ron_e,initial_calib_points=None):
     """
     Основная интерактивная функция для калибровки по длинам волн.
     `found_peaks` - это DataFrame или dict с точными центрами линий.
@@ -334,9 +374,20 @@ def interactive_wavelength_calibration(found_peaks, atlas_lines, ax_spectrum, x_
     # Контейнер для наших надежных сопоставлений: {пиксель: длина_волны}
     calib_points = {}
     # Получаем список пиксельных координат из результатов фитинга
-    pixel_centers = np.array(found_peaks)   
+    pixel_centers = np.array(found_peaks)  
     # Инициализируем модель пустой
     disp_model = None
+    if initial_calib_points:
+        calib_points = initial_calib_points.copy()
+        print(f"-> Загружено {len(calib_points)} точек из предыдущей сессии.")
+        if len(calib_points) >= 2:
+            try:
+                deg = min(len(calib_points) - 1, 5)
+                px, lmb = zip(*calib_points.items())
+                disp_model = fit_dispersion_poly(px, lmb, deg)
+                print(f"-> Начальная модель (полином {deg}-й степени) построена.")
+            except ValueError as e: print(f"! Ошибка построения начальной модели: {e}")
+        else: calib_points = {}
     while True:
         print("\n--- Статус калибровки ---")
         print(f"Найдено сопоставлений: {len(calib_points)}")
@@ -435,7 +486,8 @@ def interactive_wavelength_calibration(found_peaks, atlas_lines, ax_spectrum, x_
                                         atlas_lines,        # Полный список всех линий атласа
                                         x_coords_orig, 
                                         flux_orig, 
-                                        order_num
+                                        order_num,
+                                        gain,ron_e
                                     )
                 if is_finalized:
                         print("\n" + "="*80 + "\nФинальное решение принято и сохранено.\n" + "="*80)
@@ -446,8 +498,10 @@ def interactive_wavelength_calibration(found_peaks, atlas_lines, ax_spectrum, x_
                             ax_spectrum.set_xticklabels([f"{t:.1f}" for t in new_ticks])
                             ax_spectrum.figure.canvas.draw_idle()
                             print("-> Ось X на графике обновлена.")
+                            print(type(final_model),type(order_num),type(calib_points),type(found_peaks))
                         return {
-                            'model': final_model,
+                            'model': final_model.coef.tolist(),
+                            'model_degree': final_model.o,
                             'order_num': order_num,
                             'calib_points': calib_points,
                             'all_peaks_px': found_peaks,
@@ -467,7 +521,7 @@ if __name__ == '__main__':
     FITS_FILE_PATH = Path('/data/Observations/test_pyzeeman/o018.fts')
     TRACED_ORDERS_JSON_PATH = Path('/data/Observations/test_pyzeeman/traced_orders/o015_CRR_bt_traced.json')
     ATLAS_FILE_PATH = Path('/data/Observations/test_pyzeeman/thar_lines_blue.txt') # Путь к вашему атласу
-    SOLUTION_FILE_PATH = FITS_FILE_PATH.with_suffix('.ref_solution.pkl')
+    SOLUTION_FILE_PATH = FITS_FILE_PATH.with_suffix('.distortion_model.json')
 
     atlas_lines = load_atlas_lines(ATLAS_FILE_PATH)
     image_data, header, _ = fits_loader(FITS_FILE_PATH)
@@ -499,12 +553,12 @@ if __name__ == '__main__':
 
         current_peaks = find_and_plot_lines(x, flux, ax1d, **peak_params)
         ref_order_info = interactive_wavelength_calibration(
-            current_peaks, atlas_lines, ax1d, x, flux, order_to_extract)
+            current_peaks, atlas_lines, ax1d, x, flux, order_to_extract,2.78,5.6)
         
         if ref_order_info:
             print(f"\nСохранение информации об эталонном порядке в файл:\n{SOLUTION_FILE_PATH}")
-            with open(SOLUTION_FILE_PATH, 'wb') as f:
-                pickle.dump(ref_order_info, f)
+            with open(SOLUTION_FILE_PATH, 'w') as f:
+                json.dump(ref_order_info, f, indent=4)
             print("-> Сохранение успешно завершено.")
             
             # После успешной калибровки одного порядка можно выйти из цикла

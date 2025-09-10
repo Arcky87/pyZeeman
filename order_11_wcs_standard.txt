@@ -1,0 +1,5 @@
+# FITS WCS standard keywords defined from reference spectrum
+NAXIS1 = 4600
+CRPIX1 = 1.0
+CRVAL1 = 4422.76179614
+CDELT1 = 0.12100978

@@ -201,9 +201,11 @@ def main():
     # Ищем пики на опорном порядке
     ref_peaks = find_peaks_for_order(x, ref_spectrum, peak_params)
     print(f"Найдено {len(ref_peaks)} опорных линий в порядке №{ref_order_num}.")
-
+    
     # --- ОСНОВНОЙ ЦИКЛ ПО ПОРЯДКАМ ---
     distortion_model = {}  # Словарь для хранения коэффициентов полиномов
+    ref_model_coeffs = [0.0] * (POLYNOMIAL_DEGREE + 1)
+    distortion_model[f'order_{ref_order_num}'] = ref_model_coeffs
 
     for i, target_spectrum in enumerate(all_spectra_1d):
         target_order_num = traced_data['orders'][i]['order_number']
@@ -276,9 +278,10 @@ def main():
       #  y_curve = polynomial(x_curve, *coeffs)
         ax1.plot(x_curve, y_curve, 'k-', lw=2, label=f'Робастная модель (полином {POLYNOMIAL_DEGREE} ст.)')
         
-        ax1.set_title(f'Модель сдвига для порядка №{target_order_num} (относительно №{ref_order_num})')
+        ax1.set_title(f'Модель сдвига для порядка {target_order_num} (относительно {ref_order_num})')
         ax1.set_xlabel('Координата пика в опорном порядке (пикс.)')
         ax1.set_ylabel('Сдвиг (пикс.)')
+        ax1.set_ylim(-6,6)
         ax1.legend()
         ax1.grid(True, linestyle=':')
 
@@ -313,7 +316,7 @@ def main():
         plt.close('all') # Закрываем все, чтобы подготовиться к следующей итерации
 
     # --- Сохранение и вывод финальных результатов ПОСЛЕ цикла ---
-    distortion_model_path = 'distortion_model.json'
+    distortion_model_path = '/data/Observations/test_pyzeeman/distortion_model.json'
     with open(distortion_model_path, 'w') as f:
         json.dump(distortion_model, f, indent=4)
     print(f"\nМодель искажений сохранена в '{distortion_model_path}'")
