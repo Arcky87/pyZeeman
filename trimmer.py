@@ -30,7 +30,7 @@ def trimmer(dir_name, list_name, area, flip):
                     prihdr['NAXIS1'] = flipped_data.shape[1]
                     prihdr['NAXIS2'] = flipped_data.shape[0]
                     prihdr['HISTORY'] = 'overscan trimmed'
-                    prihdr['HISTORY'] = 'Data flipped along '+flip
+                    prihdr['HISTORY'] = 'Data flipped along '+str(flip)
                     try:
                         hdulist.writeto(name, overwrite=True)
                     except IOError:

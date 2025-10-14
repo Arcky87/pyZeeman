@@ -491,12 +491,12 @@ def main():
         step_name, step_func = all_steps[step_num]
         
         try:
-            if step_num <= 1:
+            if step_num == 1:
                 success = step_func(dirs, logger)
-            elif step_num <= 3:
+            elif step_num in [2, 3]:
                 success = step_func(dirs, config, logger)
-            elif step_num <= 5:
-                success = step_func(dirs, logger)
+            elif step_num in [4, 5]:
+                success = step_func(dirs, config, logger) if step_num == 4 else step_func(dirs, logger)
             elif step_num == 6:
                 # Создаем список obj_CRR_bt_list.txt перед трассировкой
                 create_obj_bt_list(dirs['temp'])

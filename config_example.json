@@ -4,7 +4,7 @@
   "gain": 2.78,
   "ron": 5.6,
   "n_orders": 14,
-  "trim_area": [0, 2048, 0, 2048],
+  "trim_area": [0, 625, 0, 4600],
   "flip": false,
   "cosmic_ray_params": {
     "sigclip": 4.5,
