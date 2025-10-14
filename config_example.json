@@ -1,21 +1,24 @@
 {
-  "description": "Пример конфигурации для пайплайна pyZeeman",
-  "data_path": "/data/Observations/test_pyzeeman",
-  "gain": 2.78,
-  "ron": 5.6,
-  "n_orders": 14,
-  "trim_area": [0, 625, 0, 4600],
-  "flip": false,
-  "cosmic_ray_params": {
-    "sigclip": 4.5,
-    "sigfrac": 0.3,
-    "objlim": 5.0,
-    "niter": 4
-  },
-  "tracer_params": {
-    "n_points_for_fit": 10,
-    "smooth": true,
-    "smooth_sigma": 1.0,
-    "getxwd_gauss": false
-  }
+    "data_path": "/data/Observations/your_data_directory",
+    "gain": 2.78,
+    "ron": 5.6,
+    "n_orders": 14,
+    "trim_area": [0, 625, 0, 4600],
+    "flip": false,
+    "cosmic_ray_params": {
+        "sigclip": 4.5,
+        "sigfrac": 0.3,
+        "objlim": 5.0,
+        "niter": 4
+    },
+    "scattered_light_params": {
+        "border_width": 90,
+        "plot": false
+    },
+    "tracer_params": {
+        "n_points_for_fit": 10,
+        "smooth": true,
+        "smooth_sigma": 1.0,
+        "getxwd_gauss": false
+    }
 }

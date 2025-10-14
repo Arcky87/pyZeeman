@@ -21,6 +21,7 @@ from pathlib import Path
 from lister import lister
 from trimmer import trimmer
 from list_astroscrappy import list_cosmo_cleaner
+from backlong_zee import subtract_scattered_light
 from medianer import medianer
 from list_subtractor import list_subtractor
 
@@ -50,6 +51,10 @@ DEFAULT_CONFIG = {
         "sigfrac": 0.3,
         "objlim": 5.0,
         "niter": 4
+    },
+    "scattered_light_params": {
+        "border_width": 90,
+        "plot": False
     },
     "tracer_params": {
         "n_points_for_fit": 10,
@@ -182,10 +187,37 @@ def step_03_remove_cosmic_rays(dirs, config, logger):
         return False
 
 
-def step_04_create_master_calibrations(dirs, config, logger):
-    """Шаг 4: Создание мастер-калибровок"""
+def step_04_subtract_scattered_light(dirs, config, logger):
+    """Шаг 4: Вычитание рассеянного света"""
     logger.info("\n" + "="*80)
-    logger.info("ШАГ 4: Создание мастер-калибровок")
+    logger.info("ШАГ 4: Вычитание рассеянного света")
+    logger.info("="*80)
+    
+    obj_crr_list = 'obj_CRR_list.txt'
+    obj_crr_bt_list = 'obj_CRR_bt_list.txt'
+    
+    sl_params = config['scattered_light_params']
+    
+    try:
+        status = subtract_scattered_light(
+            dirs['temp'],
+            obj_crr_list,
+            obj_crr_bt_list,
+            border_width=sl_params['border_width'],
+            plot=sl_params['plot']
+        )
+        logger.info(f"✓ Рассеянный свет вычтен: {status}")
+        logger.info(f"  Созданы файлы *_bt.fits (bias+background trimmed)")
+        return True
+    except Exception as e:
+        logger.error(f"✗ Ошибка при вычитании рассеянного света: {e}")
+        return False
+
+
+def step_05_create_master_calibrations(dirs, config, logger):
+    """Шаг 5: Создание мастер-калибровок"""
+    logger.info("\n" + "="*80)
+    logger.info("ШАГ 5: Создание мастер-калибровок")
     logger.info("="*80)
     
     # Мастер-BIAS
@@ -217,10 +249,10 @@ def step_04_create_master_calibrations(dirs, config, logger):
     return True
 
 
-def step_05_subtract_calibrations(dirs, logger):
-    """Шаг 5: Вычитание калибровок"""
+def step_06_subtract_calibrations(dirs, logger):
+    """Шаг 6: Вычитание калибровок"""
     logger.info("\n" + "="*80)
-    logger.info("ШАГ 5: Вычитание калибровок")
+    logger.info("ШАГ 6: Вычитание калибровок")
     logger.info("="*80)
     
     s_bias_path = dirs['data'] / 's_bias.fits'
@@ -267,10 +299,10 @@ def step_05_subtract_calibrations(dirs, logger):
     return True
 
 
-def step_06_trace_orders(dirs, config, logger):
-    """Шаг 6: Трассировка спектральных порядков"""
+def step_07_trace_orders(dirs, config, logger):
+    """Шаг 7: Трассировка спектральных порядков"""
     logger.info("\n" + "="*80)
-    logger.info("ШАГ 6: Трассировка спектральных порядков")
+    logger.info("ШАГ 7: Трассировка спектральных порядков")
     logger.info("="*80)
     
     flat_file = str(dirs['data'] / 's_flat.fits')
@@ -306,10 +338,10 @@ def step_06_trace_orders(dirs, config, logger):
         return False
 
 
-def step_07_wavelength_calibration(dirs, logger):
-    """Шаг 7: Калибровка по длинам волн (интерактивный шаг)"""
+def step_08_wavelength_calibration(dirs, logger):
+    """Шаг 8: Калибровка по длинам волн (интерактивный шаг)"""
     logger.info("\n" + "="*80)
-    logger.info("ШАГ 7: Калибровка по длинам волн")
+    logger.info("ШАГ 8: Калибровка по длинам волн")
     logger.info("="*80)
     logger.info("")
     logger.info("ВНИМАНИЕ: Этот шаг требует интерактивной работы!")
@@ -329,10 +361,10 @@ def step_07_wavelength_calibration(dirs, logger):
     return True
 
 
-def step_08_apply_calibration(dirs, logger):
-    """Шаг 8: Применение калибровки (требует ручного запуска)"""
+def step_09_apply_calibration(dirs, logger):
+    """Шаг 9: Применение калибровки (требует ручного запуска)"""
     logger.info("\n" + "="*80)
-    logger.info("ШАГ 8: Применение калибровки к спектрам")
+    logger.info("ШАГ 9: Применение калибровки к спектрам")
     logger.info("="*80)
     logger.info("")
     logger.info("После создания калибровочного решения, примените его:")
@@ -348,10 +380,10 @@ def step_08_apply_calibration(dirs, logger):
     return True
 
 
-def step_09_combine_orders(dirs, logger):
-    """Шаг 9: Объединение порядков (требует ручного запуска)"""
+def step_10_combine_orders(dirs, logger):
+    """Шаг 10: Объединение порядков (требует ручного запуска)"""
     logger.info("\n" + "="*80)
-    logger.info("ШАГ 9: Объединение порядков в поляризационные компоненты")
+    logger.info("ШАГ 10: Объединение порядков в поляризационные компоненты")
     logger.info("="*80)
     logger.info("")
     logger.info("После калибровки всех спектров, объедините порядки:")
@@ -470,16 +502,17 @@ def main():
         1: ("Создание списков кадров", step_01_create_lists),
         2: ("Обрезка области интереса", step_02_trim_images),
         3: ("Удаление космических частиц", step_03_remove_cosmic_rays),
-        4: ("Создание мастер-калибровок", step_04_create_master_calibrations),
-        5: ("Вычитание калибровок", step_05_subtract_calibrations),
-        6: ("Трассировка порядков", step_06_trace_orders),
-        7: ("Калибровка по длинам волн (интерактивно)", step_07_wavelength_calibration),
-        8: ("Применение калибровки (вручную)", step_08_apply_calibration),
-        9: ("Объединение порядков (вручную)", step_09_combine_orders),
+        4: ("Вычитание рассеянного света", step_04_subtract_scattered_light),
+        5: ("Создание мастер-калибровок", step_05_create_master_calibrations),
+        6: ("Вычитание калибровок", step_06_subtract_calibrations),
+        7: ("Трассировка порядков", step_07_trace_orders),
+        8: ("Калибровка по длинам волн (интерактивно)", step_08_wavelength_calibration),
+        9: ("Применение калибровки (вручную)", step_09_apply_calibration),
+        10: ("Объединение порядков (вручную)", step_10_combine_orders),
     }
     
     # Автоматические шаги (не требуют интерактивности)
-    auto_steps = [1, 2, 3, 4, 5, 6]
+    auto_steps = [1, 2, 3, 4, 5, 6, 7]
     steps_to_run = args.steps if args.steps else auto_steps
     
     # Выполнение шагов
@@ -493,13 +526,11 @@ def main():
         try:
             if step_num == 1:
                 success = step_func(dirs, logger)
-            elif step_num in [2, 3]:
+            elif step_num in [2, 3, 4]:
                 success = step_func(dirs, config, logger)
-            elif step_num in [4, 5]:
-                success = step_func(dirs, config, logger) if step_num == 4 else step_func(dirs, logger)
-            elif step_num == 6:
-                # Создаем список obj_CRR_bt_list.txt перед трассировкой
-                create_obj_bt_list(dirs['temp'])
+            elif step_num in [5, 6]:
+                success = step_func(dirs, config, logger) if step_num == 5 else step_func(dirs, logger)
+            elif step_num == 7:
                 success = step_func(dirs, config, logger)
             else:
                 success = step_func(dirs, logger)
@@ -528,9 +559,9 @@ def main():
     logger.info(f"Лог сохранен: {log_path}")
     logger.info("")
     logger.info("Следующие шаги (выполняются вручную):")
-    logger.info("  7. Калибровка по длинам волн (thar_calibration.py)")
-    logger.info("  8. Применение калибровки (apply_calibration.py)")
-    logger.info("  9. Объединение порядков (combine_orders.py)")
+    logger.info("  8. Калибровка по длинам волн (thar_calibration.py)")
+    logger.info("  9. Применение калибровки (apply_calibration.py)")
+    logger.info(" 10. Объединение порядков (combine_orders.py)")
     logger.info("")
 
 
