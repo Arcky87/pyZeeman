@@ -385,9 +385,9 @@ def finalize(final_model, calib_points_dict,
     ax2.grid(True, linestyle=':')
     ax2.legend(loc='upper right')
 
-    pdf_filename = f"reforder_dispersion_solution.pdf"
-    fig.savefig(pdf_filename)
-    print(f"   -> Сводный график решения сохранен в файл: {pdf_filename}")
+   # pdf_filename = f"reforder_dispersion_solution.pdf"
+   # fig.savefig(pdf_filename)
+  #  print(f"   -> Сводный график решения сохранен в файл: {pdf_filename}")
     plt.tight_layout(rect=[0, 0, 1, 0.96]) # Оставляем место для suptitle
     plt.show()
 

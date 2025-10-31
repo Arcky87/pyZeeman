@@ -1,0 +1,296 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+	"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+
+<head>
+<title>DEPRECATED_FILES.html</title>
+<meta http-equiv="Content-Type" content="text/html;charset=utf-8"/>
+
+</head>
+
+<body>
+
+<h1>Устаревшие файлы для удаления</h1>
+
+<p>Этот файл содержит список устаревших модулей, которые больше не используются в текущей версии пайплайна pyZeeman и могут быть безопасно удалены.</p>
+
+<h2>Статус: Готов к удалению</h2>
+
+<p>Дата анализа: 31 октября 2025</p>
+
+<h2>Категория 1: Устаревшие трассировщики</h2>
+
+<h3>simple_tracer.py</h3>
+
+<ul>
+<li><strong>Причина:</strong> Заменён на <code>not_so_simple_tracer.py</code></li>
+<li><strong>Используется:</strong> Нет</li>
+<li><strong>Безопасно удалить:</strong> Да</li>
+</ul>
+
+<h3>tracer.py</h3>
+
+<ul>
+<li><strong>Причина:</strong> Старый трассировщик с зависимостями sklearn/seaborn</li>
+<li><strong>Используется:</strong> Нет</li>
+<li><strong>Безопасно удалить:</strong> Да</li>
+</ul>
+
+<h2>Категория 2: Устаревшие экстракторы</h2>
+
+<h3>extractor.py</h3>
+
+<ul>
+<li><strong>Причина:</strong> Заменён на <code>extract_order_spectrum.py</code></li>
+<li><strong>Используется:</strong> Нет</li>
+<li><strong>Безопасно удалить:</strong> Да</li>
+</ul>
+
+<h3>extract_slicer.py</h3>
+
+<ul>
+<li><strong>Причина:</strong> Старый экстрактор срезов</li>
+<li><strong>Используется:</strong> Нет</li>
+<li><strong>Безопасно удалить:</strong> Да</li>
+</ul>
+
+<h3>extract_and_rebin.py</h3>
+
+<ul>
+<li><strong>Причина:</strong> Старый модуль передискретизации</li>
+<li><strong>Используется:</strong> Нет</li>
+<li><strong>Безопасно удалить:</strong> Да</li>
+</ul>
+
+<h2>Категория 3: Устаревшие модули очистки</h2>
+
+<h3>LA_Cosmic.py</h3>
+
+<ul>
+<li><strong>Причина:</strong> Старая реализация удаления космических частиц</li>
+<li><strong>Используется:</strong> Нет (используется astroscrappy)</li>
+<li><strong>Безопасно удалить:</strong> Да</li>
+</ul>
+
+<h3>LA_image.py</h3>
+
+<ul>
+<li><strong>Причина:</strong> Вспомогательный модуль для LA_Cosmic.py</li>
+<li><strong>Используется:</strong> Только в LA_Cosmic.py</li>
+<li><strong>Безопасно удалить:</strong> Да</li>
+</ul>
+
+<h3>list_cosmo_cleaner.py</h3>
+
+<ul>
+<li><strong>Причина:</strong> Содержит закомментированный код <code>detCos</code></li>
+<li><strong>Используется:</strong> Нет (заменён на list_astroscrappy.py)</li>
+<li><strong>Безопасно удалить:</strong> Да</li>
+</ul>
+
+<h3>sl_remover.py</h3>
+
+<ul>
+<li><strong>Причина:</strong> Старый модуль удаления рассеянного света</li>
+<li><strong>Используется:</strong> Нет (заменён на backlong_zee.py)</li>
+<li><strong>Безопасно удалить:</strong> Да</li>
+</ul>
+
+<h2>Категория 4: Устаревшие калибровочные модули</h2>
+
+<h3>thar_rebin.py</h3>
+
+<ul>
+<li><strong>Причина:</strong> Старый модуль для ThAr</li>
+<li><strong>Используется:</strong> Нет</li>
+<li><strong>Безопасно удалить:</strong> Да</li>
+</ul>
+
+<h3>blz_correct.py</h3>
+
+<ul>
+<li><strong>Причина:</strong> Старая коррекция blazed функции</li>
+<li><strong>Используется:</strong> Нет</li>
+<li><strong>Безопасно удалить:</strong> Да</li>
+</ul>
+
+<h2>Категория 5: Устаревшие вспомогательные модули</h2>
+
+<h3>surf_fit.py</h3>
+
+<ul>
+<li><strong>Причина:</strong> Используется только в устаревшем sl_remover.py</li>
+<li><strong>Используется:</strong> Только в sl_remover.py</li>
+<li><strong>Безопасно удалить:</strong> Да</li>
+</ul>
+
+<h3>load_trace.py</h3>
+
+<ul>
+<li><strong>Причина:</strong> Возможно устаревший загрузчик</li>
+<li><strong>Используется:</strong> Не найдено использований в активном коде</li>
+<li><strong>Безопасно удалить:</strong> Да (но проверить перед удалением)</li>
+</ul>
+
+<h2>Категория 6: Временные и служебные файлы</h2>
+
+<h3>.extractor.py.swp</h3>
+
+<ul>
+<li><strong>Причина:</strong> Временный файл vim</li>
+<li><strong>Используется:</strong> Нет</li>
+<li><strong>Безопасно удалить:</strong> Да</li>
+</ul>
+
+<h2>Итого</h2>
+
+<p><strong>Всего файлов для удаления: 13</strong></p>
+
+<h3>Команда для удаления (выполнять осторожно!)</h3>
+
+<p>```bash</p>
+
+<h1>НЕ ВЫПОЛНЯТЬ без резервной копии!</h1>
+
+<h1>Сначала создайте бранч в git или резервную копию</h1>
+
+<h1>Удаление устаревших модулей</h1>
+
+<p>rm simple_tracer.py
+rm tracer.py
+rm extractor.py
+rm extract_slicer.py
+rm extract_and_rebin.py
+rm LA_Cosmic.py
+rm LA_image.py
+rm list_cosmo_cleaner.py
+rm sl_remover.py
+rm thar_rebin.py
+rm blz_correct.py
+rm surf_fit.py
+rm load_trace.py
+rm .extractor.py.swp</p>
+
+<h1>Удаление скомпилированных файлов</h1>
+
+<p>rm -rf <strong>pycache</strong>/
+```</p>
+
+<h2>Рекомендации перед удалением</h2>
+
+<ol>
+<li><strong>Создайте резервную копию</strong> или git commit текущего состояния</li>
+<li><strong>Создайте новую ветку</strong> в git: <code>git checkout -b cleanup-deprecated</code></li>
+<li><strong>Запустите тесты</strong> (если есть) после удаления</li>
+<li><strong>Проверьте работу пайплайна</strong> на тестовых данных</li>
+<li><strong>Сделайте commit</strong> изменений с подробным описанием</li>
+</ol>
+
+<h2>Альтернатива: Архивация</h2>
+
+<p>Вместо удаления можно создать архив устаревших модулей:</p>
+
+<p>```bash</p>
+
+<h1>Создать директорию для архива</h1>
+
+<p>mkdir -p deprecated/</p>
+
+<h1>Переместить файлы в архив</h1>
+
+<p>mv simple_tracer.py deprecated/
+mv tracer.py deprecated/
+mv extractor.py deprecated/
+mv extract_slicer.py deprecated/
+mv extract_and_rebin.py deprecated/
+mv LA_Cosmic.py deprecated/
+mv LA_image.py deprecated/
+mv list_cosmo_cleaner.py deprecated/
+mv sl_remover.py deprecated/
+mv thar_rebin.py deprecated/
+mv blz_correct.py deprecated/
+mv surf_fit.py deprecated/
+mv load_trace.py deprecated/</p>
+
+<h1>Создать README в архиве</h1>
+
+<p>cat > deprecated/README.md &lt;&lt; 'EOF'</p>
+
+<h1>Архив устаревших модулей</h1>
+
+<p>Эти модули были заменены на более современные версии и больше не используются
+в текущей версии пайплайна pyZeeman.</p>
+
+<p>Они сохранены здесь для справки и возможного восстановления функциональности.</p>
+
+<p>Дата архивации: 31 октября 2025
+EOF</p>
+
+<h1>Обновить .gitignore</h1>
+
+<p>echo "deprecated/" >> .gitignore
+```</p>
+
+<h2>Обновление .gitignore</h2>
+
+<p>После очистки добавьте в <code>.gitignore</code>:</p>
+
+<p>```</p>
+
+<h1>Python</h1>
+
+<p><strong>pycache</strong>/
+*.py[cod]
+*$py.class
+*.so
+.Python</p>
+
+<h1>Временные файлы</h1>
+
+<p>*.swp
+*.swo
+*~</p>
+
+<h1>Данные и результаты</h1>
+
+<p>*.fits
+*.json
+!config_example.json
+!config_pyzeeman.json
+*.log
+*.pdf
+*.png
+temp/
+RAW/
+TRACED_ORDERS/
+CALIBRATIONS/
+CALIBRATED/
+FINAL/
+cosmic_masks/
+calibrated/
+calibrated_thar/</p>
+
+<h1>IDE</h1>
+
+<p>.vscode/
+.idea/
+*.code-workspace
+```</p>
+
+<h2>Статус</h2>
+
+<ul>
+<li>[ ] Создана резервная копия</li>
+<li>[ ] Создана git ветка для очистки</li>
+<li>[ ] Файлы удалены/заархивированы</li>
+<li>[ ] Тесты пройдены</li>
+<li>[ ] Пайплайн проверен на тестовых данных</li>
+<li>[ ] Изменения закоммичены</li>
+<li>[ ] .gitignore обновлён</li>
+<li>[ ] Документация обновлена</li>
+</ul>
+
+</body>
+</html>

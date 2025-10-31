@@ -133,7 +133,6 @@ def stage_1_preprocessing(config, logger):
             niter=config['preprocessing'].get('cosmic_ray_params', {}).get('niter', 4)
         )
         logger.info(f"✓ {status}")
-        logger.info(f"  Маски сохранены в: cosmic_masks/")
     
     # 1.4 Создание super bias
     logger.info("\n1.4 Создание super bias...")

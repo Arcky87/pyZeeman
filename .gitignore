@@ -176,3 +176,38 @@ cython_debug/
 #Project specific 
 *.swp
 *.pdf
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Временные файлы
+*.swp
+*.swo
+*~
+
+# Данные и результаты
+*.fits
+*.json
+!config_example.json
+!config_pyzeeman.json
+*.log
+*.pdf
+*.png
+temp/
+RAW/
+TRACED_ORDERS/
+CALIBRATIONS/
+CALIBRATED/
+FINAL/
+cosmic_masks/
+calibrated/
+calibrated_thar/
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
