@@ -1,5 +1,5 @@
 import astropy.io.fits as pyfits
-import os
+from numpy import maximum
 import numpy
 
 import warnings
@@ -22,6 +22,7 @@ def list_subtractor(list_name, subtrahend_name, stype):
 
             if data.shape[0]==delta.shape[0] and data.shape[1]==delta.shape[1]:
                 data=numpy.float32(data)-delta
+                data=maximum(data, 1e-6) # убираем отрицательные значения
                 prihdr['HISTORY'] = stype+' subtracted'
                 hdu = pyfits.PrimaryHDU(data, prihdr)
                 hdulist = pyfits.HDUList([hdu])

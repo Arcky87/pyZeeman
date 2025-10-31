@@ -1,0 +1,43 @@
+{
+  "data_dir": "/data/Observations/test_pyzeeman_final/",
+  "device": "zeeman",
+  "n_orders": 14,
+  "gain": 2.78,
+  "ron": 5.6,
+  "s_bias_name": "s_bias.fits",
+  "s_flat_name": "s_flat.fits",
+  "atlas_file": "thar.dat",
+  "reference_order": 11,
+  "poly_degree": 4,
+  "upper_orders": [1, 2, 3, 4, 5, 6, 7],
+  "lower_orders": [8, 9, 10, 11, 12, 13, 14],
+  "preprocessing": {
+    "trim_area": [0, 625, 0, 4600],
+    "flip": false,
+    "cosmic_ray_removal": true,
+	"cosmic_ray_params": {
+    "sigclip": 4.5,
+    "sigfrac": 0.3,
+    "objlim": 5.0,
+    "niter": 4
+	},
+ 	"scatter_light": {
+	   "enabled": true,
+	   "border_width": 75,
+	   "save_background": true
+  		}
+  },
+  "tracing": {
+	"n_points_for_fit": 10,
+	"smooth": true,
+	"smooth_sigma": 1.0,
+	"getxwd_gauss": false,
+	"overwrite": true,
+	"save_format": "json",
+	"visualization": {
+       "show_point_fits": false,    
+       "show_final_traces": true,  
+       "save_plots": true           
+  }
+  }
+}

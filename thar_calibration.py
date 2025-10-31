@@ -88,9 +88,10 @@ def find_peaks_for_order(x_coords, flux, peak_params):
             fit_center = fitted_model.mean_0.value
             fit_amplitude = fitted_model.amplitude_0.value
             fit_sigma = fitted_model.stddev_0.value
+            fit_bg = fitted_model.amplitude_1.value
             
-            #fit_amplitude, fit_center, fit_sigma, _ = popt
             if not (x_window[0] < fit_center < x_window[-1]) or fit_sigma < 0 or fit_amplitude < 0:
+                 print(f" !  Пропускаем пик #{i+1} в {fit_center:.2f}: фит сошелся к нефизичным параметрам.")
                  continue
             final_peak_centers.append(fit_center)
         except RuntimeError:
@@ -212,20 +213,91 @@ def find_and_plot_lines(x_coords, flux, ax, prominence_sigma, width_range, dista
 
     return final_peak_centers
 
-def find_nearest_line(reference_lambda, atlas_lines):
-    """Находит ближайшую линию в атласе к заданной длине волны."""
+def match_peaks(found_pixels, reference_dict, search_radius_pixels=5):
+    """
+    Сопоставляет найденные пики с референсными и определяет длины волн.
+    
+    Parameters:
+    -----------
+    found_pixels : list
+        Список найденных пиков в пикселях
+    reference_dict : dict
+        Словарь {пиксель: длина_волны} референсных линий
+    search_radius_pixels : float
+        Радиус поиска в пикселях для первоначального сопоставления
+    max_wavelength_diff : float
+        Максимальная разность длин волн для проверки согласованности
+    
+    Returns:
+    --------
+    """ 
+    ref_pixels = np.array([float(k) for k in reference_dict.keys()])
+    ref_wavelengths = np.array([float(v) for v in reference_dict.values()])
+    found_array = np.array(found_pixels)   
+
+    sort_idx = np.argsort(ref_pixels)
+    ref_pixels_sorted = ref_pixels[sort_idx]
+    ref_wavelengths_sorted = ref_wavelengths[sort_idx]
+
+    sort_idx_found = np.argsort(found_array)
+    found_sorted = found_array[sort_idx_found]
+
+    matched_pairs = []
+    used_ref_indices = set()
+    used_found_indices = set()
+
+    for i, found_px in enumerate(found_sorted):
+        idx = np.searchsorted(ref_pixels_sorted, found_px, side="left")
+        candidates = []
+        candidate_indices = []
+
+        if idx > 0:
+            left_idx = idx - 1
+            left_px = ref_pixels_sorted[left_idx]
+            if abs(left_px - found_px) <= search_radius_pixels:
+                candidates.append((left_px, ref_wavelengths_sorted[left_idx]))
+                candidate_indices.append(left_idx)
+        
+        if idx < len(ref_pixels_sorted):
+            right_px = ref_pixels_sorted[idx]
+            if abs(right_px - found_px) <= search_radius_pixels:
+                candidates.append((right_px, ref_wavelengths_sorted[idx]))
+                candidate_indices.append(idx)
+        
+        if candidates:
+            best_candidate = min(candidates, key=lambda x: abs(x[0] - found_px))
+            best_ref_px, best_wavelength = best_candidate
+            best_idx = candidate_indices[candidates.index(best_candidate)]
+        
+            if best_idx not in used_ref_indices:
+                 matched_pairs.append({
+                    'found_pixel': found_px,
+                    'wavelength': best_wavelength,
+                    'pixel_offset': found_px - best_ref_px,
+                })
+                 used_ref_indices.add(best_idx)  
+                 used_found_indices.add(i)
+
+    unmatched_found = [float(found_sorted[i]) for i in range(len(found_sorted)) 
+                      if i not in used_found_indices]
+
+    return matched_pairs, unmatched_found
+
+def find_nearest_line(reference, atlas):
+    """Находит ближайшие линии из атласа для списка найденных пиков."""
     # np.searchsorted требует отсортированного массива, что мы обеспечиваем в load_atlas_lines
-    idx = np.searchsorted(atlas_lines, reference_lambda, side="left")
+
+    idx = np.searchsorted(atlas, reference, side="left")
     
     if idx == 0:
-        return atlas_lines[0]
-    if idx == len(atlas_lines):
-        return atlas_lines[-1]
+        return atlas[0]
+    if idx == len(atlas):
+        return atlas[-1]
     
     # Сравниваем с левым и правым соседом
-    left_neighbor = atlas_lines[idx - 1]
-    right_neighbor = atlas_lines[idx]
-    if abs(reference_lambda - left_neighbor) < abs(reference_lambda - right_neighbor):
+    left_neighbor = atlas[idx - 1]
+    right_neighbor = atlas[idx]
+    if abs(reference - left_neighbor) < abs(reference - right_neighbor):
         return left_neighbor
     else:
         return right_neighbor
@@ -241,7 +313,11 @@ def fit_dispersion_poly(pixel_coords, lambda_coords, poly_deg):
     poly_model = np.poly1d(coeffs)
     return poly_model
 
-def finalize_and_resample(final_model, calib_points_dict, all_found_peaks, atlas_lines, x_coords_orig, flux_orig, order_num,gain,ron_e):
+def finalize(final_model, calib_points_dict, 
+                          all_found_peaks, 
+                          atlas_lines, 
+                          x_coords_orig
+                          ):
     """
     Выполняет финальные шаги: создает ЕДИНЫЙ СВОДНЫЙ ГРАФИК с остатками для ВСЕХ линий, 
     пересчитывает спектр и сохраняет результаты.
@@ -272,18 +348,20 @@ def finalize_and_resample(final_model, calib_points_dict, all_found_peaks, atlas
     print("1. Анализ остатков и создание сводного графика решения...")
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 9), sharex=True,
                                    gridspec_kw={'height_ratios': [3, 1]})
-    fig.suptitle(f"Дисперсионное решение для порядка №{order_num}", fontsize=16)
+    fig.suptitle(f"Дисперсионное решение для опорного порядка", fontsize=16)
 
     # --- Верхний график: Решение на фоне данных ---
     
-    x_smooth = np.linspace(x_min, x_max, 500)
+    x_smooth = np.linspace(x_min, x_max)
     ax1.plot(x_smooth, final_model(x_smooth), 'r-', lw=2, label=f"Полином {final_model.order}-й степени")
     ax1.scatter(px_ident, lmb_ident, facecolors='none', edgecolors='blue', s=150, lw=1.5,
                 label=f"Опорные точки, RMS={rms:.5f}")
-    ax1.scatter(unidentified_peaks_px, unid_atlas_lmb, c='gray', marker='|', s=100, 
-                lw=1.5, label=f"Найденные (не опознаны)")
+    ax1.scatter(unidentified_peaks_px, unid_atlas_lmb, c='gray', marker='+', s=100, 
+                lw=1.5, label=f"Найденные в атласе")
 
-    ax1.set_ylabel("Длина волны (Å)"); ax1.set_xlim(x_min, x_max); ax1.set_ylim(lambda_min, lambda_max)
+    ax1.set_ylabel("Длина волны (Å)") 
+    ax1.set_xlim(x_min, x_max) 
+    ax1.set_ylim(lambda_min, lambda_max)
     ax1.grid(True, linestyle=':', which='both')
     
     info_text = (f"RMS ошибки (по опорным точкам): {rms:.5f} Å\n"
@@ -297,8 +375,7 @@ def finalize_and_resample(final_model, calib_points_dict, all_found_peaks, atlas
     ax2.axhline(0, color='red', linestyle='--', lw=1)
     # Остатки для ОПОРНЫХ точек (Истинная λ - Модельная λ)
     ax2.scatter(px_ident, residuals_ident, marker='x', color='blue', s=70, lw=1.5,
-                label='Опорные точки')
-    
+                label='Опорные точки') 
     # Остатки для НЕОПОЗНАННЫХ точек (Ближайшая λ в атласе - Модельная λ)
     if len(unidentified_peaks_px) > 0:
         ax2.scatter(unidentified_peaks_px, residuals_unid, marker='+', color='gray', s=50,
@@ -308,7 +385,7 @@ def finalize_and_resample(final_model, calib_points_dict, all_found_peaks, atlas
     ax2.grid(True, linestyle=':')
     ax2.legend(loc='upper right')
 
-    pdf_filename = f"order_{order_num}_dispersion_solution.pdf"
+    pdf_filename = f"reforder_dispersion_solution.pdf"
     fig.savefig(pdf_filename)
     print(f"   -> Сводный график решения сохранен в файл: {pdf_filename}")
     plt.tight_layout(rect=[0, 0, 1, 0.96]) # Оставляем место для suptitle
@@ -317,52 +394,50 @@ def finalize_and_resample(final_model, calib_points_dict, all_found_peaks, atlas
     user_choice = input("\nГрафик остатков вас устраивает? Продолжить с переинтерполяцией и сохранением? [y/n]: ").lower()
     if user_choice == 'y':
         print("\n--- Финализация и сохранение результатов ---")
-        print("\n1. Переинтерполяция спектра на линейную сетку длин волн...")
-
-        CRPIX1 = 1.0      
-        CRVAL1 = final_model(x_coords_orig[0])
-        NAXIS1 = len(x_coords_orig)
-        lambda_start = final_model(x_coords_orig[0])
-        lambda_end = final_model(x_coords_orig[-1])
-        CDELT1 = (lambda_end - lambda_start) / (NAXIS1 - 1)
-       # dispersion_func = final_model.deriv()
-       # CDELT1 = np.min(np.abs(dispersion_func(x_coords_orig)))
-        target_dispersion = (CRVAL1 + (np.arange(NAXIS1) - (CRPIX1 - 1)) * CDELT1) * u.AA
-        
-        # ПЗС-ошибки по потокам считаются по заданным GAIN, RON
-        error_adu = calculate_ccd_error(flux_orig, gain, ron_e)
-        uncertainty = StdDevUncertainty(error_adu * u.adu)
-# Готовим монотонную сетку для specutils
-        original_wavelengths = final_model(x_coords_orig) * u.AA
-        sort_indices = np.argsort(original_wavelengths)
-
-        # Создаем объект Spectrum1D. Важно: сетка должна быть строго монотонной.
-        input_spectrum = Spectrum1D(
-            flux=flux_orig[sort_indices] * u.adu,
-            spectral_axis=original_wavelengths[sort_indices],
-            uncertainty=uncertainty[sort_indices]
-        )
-
-        flux_resampler = resample.FluxConservingResampler()
-        resampled_spectrum = flux_resampler(input_spectrum, target_dispersion)
-
-        print("\n2. Сохранение результатов линеаризации опорного спектра...")
-        wcs_filename = f"order_{order_num}_wcs_standard.txt"
-        with open(wcs_filename, 'w') as f:
-            f.write("# FITS WCS standard keywords defined from reference spectrum\n")
-            f.write(f"NAXIS1 = {NAXIS1}\n")
-            f.write(f"CRPIX1 = {CRPIX1}\n")
-            f.write(f"CRVAL1 = {CRVAL1:.8f}\n")
-            f.write(f"CDELT1 = {CDELT1:.8f}\n")
-        print(f"  -> Стандартные параметры WCS сохранены в: {wcs_filename}")
-        
-        
         return True  # <--- Возвращаем True, если пользователь согласен
     else:
         print("-> Отмена. Возврат в меню калибровки...")
         return False # <--- Возвращаем False, если пользователь хочет попробовать снова
 
-def interactive_wavelength_calibration(found_peaks, atlas_lines, ax_spectrum, x_coords_orig, flux_orig, order_num,gain,ron_e,initial_calib_points=None):
+def resample(final_model, x_coords, flux_orig, gain, ron_e):
+    CRPIX1 = 1.0      
+    CRVAL1 = final_model(x_coords[0])
+    NAXIS1 = len(x_coords)
+        #lambda_start = final_model(x_coords_orig[0])
+        #lambda_end = final_model(x_coords_orig[-1])
+        #CDELT1 = (lambda_end - lambda_start) / (NAXIS1 - 1)
+    dispersion_func = final_model.deriv()
+    CDELT1 = np.min(np.abs(dispersion_func(x_coords)))
+    target_wl = (CRVAL1 + (np.arange(1,NAXIS1+1)-CRPIX1) * CDELT1) * u.AA
+        
+        # ПЗС-ошибки по потокам считаются по заданным GAIN, RON
+    error_adu = calculate_ccd_error(flux_orig, gain, ron_e)
+    uncertainty = StdDevUncertainty(error_adu * u.adu)
+# Готовим монотонную сетку для specutils
+    original_wavelengths = final_model(x_coords) * u.AA
+    sort_indices = np.argsort(original_wavelengths)
+
+        # Создаем объект Spectrum1D. Важно: сетка должна быть строго монотонной.
+    input_spectrum = Spectrum1D(
+            flux=flux_orig[sort_indices] * u.adu,
+            spectral_axis=original_wavelengths[sort_indices],
+            uncertainty=uncertainty[sort_indices]
+        )
+
+    flux_resampler = resample.FluxConservingResampler()
+    resampled_spectrum = flux_resampler(input_spectrum, target_wl)
+    return (resampled_spectrum,
+            {
+                'CRPIX1': CRPIX1,
+                'CRVAL1': CRVAL1.value if hasattr(CRVAL1, 'value') else CRVAL1,
+                'NAXIS1': NAXIS1,
+                'CDELT1': CDELT1.value if hasattr(CDELT1, 'value') else CDELT1
+            } )
+
+def interactive_wavelength_calibration(found_peaks, atlas_lines, 
+                                       ax_spectrum, x_coords_orig, 
+                                       order_num,
+                                       initial_calib_points=None):
     """
     Основная интерактивная функция для калибровки по длинам волн.
     `found_peaks` - это DataFrame или dict с точными центрами линий.
@@ -371,7 +446,7 @@ def interactive_wavelength_calibration(found_peaks, atlas_lines, ax_spectrum, x_
     print("        Интерактивный режим калибровки по длинам волн")
     print("="*80)
     
-    # Контейнер для наших надежных сопоставлений: {пиксель: длина_волны}
+    # Контейнер для сопоставлений: {пиксель: длина_волны}
     calib_points = {}
     # Получаем список пиксельных координат из результатов фитинга
     pixel_centers = np.array(found_peaks)  
@@ -459,15 +534,38 @@ def interactive_wavelength_calibration(found_peaks, atlas_lines, ax_spectrum, x_
                 continue
 
             print("\n" + "-"*80)
-            print(f"{'Пик (пикс)':>12} | {'Предсказано (Å)':>18} | {'Ближайший в атласе (Å)':>22} | {'Разница (Å)':>12}")
+            print(f"{'Пик (пикс)':>12} | {'Предсказано (Å)':>18} | {'Ближайший в атласе (Å)':>22} | {'Разница (Å)':>12} | {'Статус':>10}")
             print("-" * 80)
 
+            auto_added_count = 0
             for peak_px in unidentified_peaks:
                 predicted_lambda = disp_model(peak_px)
                 nearest_atlas_lambda = find_nearest_line(predicted_lambda, atlas_lines)
                 diff = predicted_lambda - nearest_atlas_lambda
-                print(f"{peak_px:12.3f} | {predicted_lambda:18.4f} | {nearest_atlas_lambda:22.4f} | {diff:12.4f}")
+                
+                # Автоматически добавляем точку, если разница меньше 0.002
+                status = ""
+                if abs(diff) < 0.005:
+                    calib_points[peak_px] = nearest_atlas_lambda
+                    auto_added_count += 1
+                    status = "ДОБАВЛЕН"
+                
+                print(f"{peak_px:12.3f} | {predicted_lambda:18.4f} | {nearest_atlas_lambda:22.4f} | {diff:12.4f} | {status:>10}")
             print("-" * 80)
+            
+            # Обновляем модель, если были добавлены новые точки
+            if auto_added_count > 0:
+                print(f"\n-> Автоматически добавлено точек: {auto_added_count}")
+                current_deg = min(len(calib_points) - 1, 5)
+                try:
+                    px, lmb = zip(*calib_points.items())
+                    disp_model = fit_dispersion_poly(px, lmb, current_deg)
+                    print(f"-> Модель обновлена (полином {current_deg}-й степени). Всего точек: {len(calib_points)}")
+                except ValueError as e:
+                    print(f"! Ошибка обновления модели: {e}")
+                    disp_model = None
+            else:
+                print("\n-> Ни одна точка не добавлена автоматически (все разницы >= 0.002 Å)")
         
         # --- ФИНАЛИЗАЦИЯ ---
         elif cmd == 'f':
@@ -480,14 +578,11 @@ def interactive_wavelength_calibration(found_peaks, atlas_lines, ax_spectrum, x_
                 px, lmb = zip(*calib_points.items())
                 final_model = fit_dispersion_poly(px, lmb, final_deg)
                 
-                is_finalized = finalize_and_resample(final_model, 
+                is_finalized = finalize(final_model, 
                                         calib_points,       # Словарь {пиксель: λ} опознанных точек
                                         found_peaks,        # Полный список всех найденных пикселей
                                         atlas_lines,        # Полный список всех линий атласа
-                                        x_coords_orig, 
-                                        flux_orig, 
-                                        order_num,
-                                        gain,ron_e
+                                        x_coords_orig
                                     )
                 if is_finalized:
                         print("\n" + "="*80 + "\nФинальное решение принято и сохранено.\n" + "="*80)
@@ -498,16 +593,27 @@ def interactive_wavelength_calibration(found_peaks, atlas_lines, ax_spectrum, x_
                             ax_spectrum.set_xticklabels([f"{t:.1f}" for t in new_ticks])
                             ax_spectrum.figure.canvas.draw_idle()
                             print("-> Ось X на графике обновлена.")
-                            print(type(final_model),type(order_num),type(calib_points),type(found_peaks))
+                
                         return {
                             'model': final_model.coef.tolist(),
                             'model_degree': final_model.o,
                             'order_num': order_num,
                             'calib_points': calib_points,
                             'all_peaks_px': found_peaks,
-                        }            
+                        }
+                else:
+                    # Решение A: Восстанавливаем модель из существующих точек после отказа
+                    if len(calib_points) >= 2:
+                        current_deg = min(len(calib_points) - 1, 5)
+                        try:
+                            px, lmb = zip(*calib_points.items())
+                            disp_model = fit_dispersion_poly(px, lmb, current_deg)
+                            print(f"-> Модель восстановлена из {len(calib_points)} точек (полином {current_deg}-й степени).")
+                        except ValueError as e:
+                            print(f"! Ошибка восстановления модели: {e}")
+                            disp_model = None
             except ValueError as e:
-                print(f"Ошибка: {e}. Попробуйте снова.") 
+                print(f"Ошибка: {e}. Попробуйте снова.")
         elif cmd == 'q':
             if input("Вы уверены, что хотите выйти из калибровки? [y/n]: ").lower() == 'y':
                 break
@@ -553,7 +659,7 @@ if __name__ == '__main__':
 
         current_peaks = find_and_plot_lines(x, flux, ax1d, **peak_params)
         ref_order_info = interactive_wavelength_calibration(
-            current_peaks, atlas_lines, ax1d, x, flux, order_to_extract,2.78,5.6)
+            current_peaks, atlas_lines, ax1d, x, order_to_extract)
         
         if ref_order_info:
             print(f"\nСохранение информации об эталонном порядке в файл:\n{SOLUTION_FILE_PATH}")

@@ -13,9 +13,9 @@ def trimmer(dir_name, list_name, area, flip):
                 hdulist = pyfits.open(name, mode = 'update', do_not_scale_image_data=True)
                 prihdr = hdulist[0].header
                 data = hdulist[0].data.squeeze().copy()
-                print(f'FITs has {data.shape} dims')
+        #        print(f'FITs has {data.shape} dims')
                 hdulist.close()
-                print(data.shape[0], (int(area[1])-int(area[0])),data.shape[1], (int(area[3])-int(area[2])))
+            #    print(data.shape[0], (int(area[1])-int(area[0])),data.shape[1], (int(area[3])-int(area[2])))
                 if data.shape[0]>=(int(area[1])-int(area[0])) and data.shape[1]>=(int(area[3])-int(area[2])):
                     trimmed_data = copy.copy(data[int(area[0]):int(area[1]),int(area[2]):int(area[3])])
                     if flip == 'X':

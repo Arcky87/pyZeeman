@@ -39,6 +39,7 @@ def extract_order(image_data, traced_data, order_number):
     x_coords = trace['x']
     y_upper_trace = trace['y_upper']
     y_lower_trace = trace['y_lower']
+    #y_center_trace = trace['y_center']
 
     extracted_flux = np.zeros(img_width)
 
@@ -48,12 +49,23 @@ def extract_order(image_data, traced_data, order_number):
         if not (0 <= x_col < img_width):
             continue
 
-        y_start = int(np.ceil(y_upper_trace[i]))
-        y_end = int(np.floor(y_lower_trace[i]))
+        y_start = int(np.floor(y_upper_trace[i]))
+        y_end = int(np.ceil(y_lower_trace[i]))
+        #y_center = int(np.rint(y_center_trace[i]))
+
+        weight_top = 1.0 - (y_upper_trace[i] - y_start)
+        weight_bottom = y_lower_trace[i] - (y_end - 1)
+        column_flux = 0.0
+
+        column_flux += image_data[y_start, x_col] * weight_top
 
         if y_start <= y_end:
-            column_flux = np.sum(image_data[y_start:y_end, x_col])
-            extracted_flux[x_col] = column_flux
+            column_flux += np.sum(image_data[y_start+1:y_end, x_col])
+        
+        column_flux += image_data[y_end, x_col] * weight_bottom
+        extracted_flux[x_col] = column_flux
+        
+       # extracted_flux[x_col] = image_data[y_center,x_col]
 
     return np.arange(img_width), extracted_flux
 
@@ -68,8 +80,8 @@ def plot_extracted_spectrum(x_coords, flux, order_number,ax=None):
     ax.plot(x_coords, flux)
     ax.set_title(f"Order number {order_number}")
     ax.set_xlabel("Pixels")
-    ax.set_ylabel("ADU")
-    ax.grid(True, linestyle='--', alpha=0.6)
+    ax.set_ylabel("Flux, ADU")
+    ax.grid(True, linestyle='--', alpha=0.3)
     fig.tight_layout()
     return fig, ax
 

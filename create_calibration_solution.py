@@ -64,8 +64,8 @@ def main():
 
     calibration_result = interactive_wavelength_calibration(
         found_peaks=initial_peaks, atlas_lines=atlas_lines, ax_spectrum=ax_calib,
-        x_coords_orig=x_coords_orig, flux_orig=ref_spectrum,
-        order_num=ref_order_num, gain=GAIN, ron_e=RON_E,
+        x_coords_orig=x_coords_orig,
+        order_num=ref_order_num,
         initial_calib_points=loaded_calib_points
     )
     plt.close(fig_calib)

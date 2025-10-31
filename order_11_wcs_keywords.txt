@@ -1,4 +1,0 @@
-# FITS WCS keywords for order 11
-CRVAL1 = 4422.76492415
-CDELT1 = 0.11958480
-CRPIX1 = 1.0

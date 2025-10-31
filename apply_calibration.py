@@ -1,4 +1,9 @@
-# Файл: apply_calibration.py (версия с улучшениями)
+#!/usr/bin/env python3
+"""
+apply_calibration.py - Применение дисперсионной калибровки к спектрам
+
+Применяет калибровку в нативной сетке детектора (БЕЗ линеаризации)
+"""
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -6,152 +11,278 @@ import argparse
 from pathlib import Path
 import json
 from astropy.io import fits
-from astropy.modeling import models
-from astropy.nddata import StdDevUncertainty
-from specutils import Spectrum1D
-from specutils.manipulation import resample
-from astropy import units as u
 
-from thar_calibration import *
-from loaders import *
-from visualize_trace import * 
-from thar_rebin import *
+from extract_order_spectrum import extract_order_summed, load_trace_data
+
 
 def load_json_file(file_path):
+    """Загружает JSON файл"""
     try:
-        with open(file_path, 'r') as f: return json.load(f)
-    except Exception as e: print(f"Ошибка при чтении файла '{file_path}': {e}"); return None
+        with open(file_path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Ошибка при чтении файла '{file_path}': {e}")
+        return None
+
+
+def apply_calibration_native(
+    science_file: Path,
+    trace_file: Path,
+    calibration_file: Path,
+    output_dir: Path = None,
+    gain: float = 2.78,
+    ron_e: float = 5.6
+):
+    """
+    Применяет калибровку к научному кадру (нативная сетка, БЕЗ линеаризации)
+    """
+    print("="*80)
+    print("ПРИМЕНЕНИЕ КАЛИБРОВКИ (НАТИВНАЯ СЕТКА)")
+    print("="*80)
+    
+    # Загрузка
+    with fits.open(science_file) as hdul:
+        science_data = hdul[0].data
+        header = hdul[0].header
+    
+    trace_data = load_trace_data(trace_file)
+    calibration = load_json_file(calibration_file)
+    
+    if not trace_data or not calibration:
+        print("Ошибка загрузки данных")
+        return None
+    
+    # Определить тип калибровки
+    if 'slices' in calibration:
+        print(f"Полная калибровка: {calibration['thar_file']}")
+        print(f"Срезов: {len(calibration['slices'])}/14")
+        slices = calibration['slices']
+    elif 'model' in calibration:
+        print(f"Калибровка одного среза: {calibration.get('order_num', 'unknown')}")
+        slices = {str(calibration['order_num']): calibration}
+    else:
+        print("Неизвестный формат калибровки")
+        return None
+    
+    # Создать output директорию если нужно
+    if output_dir:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Применить к каждому срезу
+    results = {}
+    
+    for order_str in sorted(slices.keys(), key=lambda x: int(x)):
+        order_num = int(order_str)
+        slice_calib = slices[order_str]
+        
+        print(f"\nСрез {order_num}...")
+        
+        # Извлечь спектр
+        x_pixels, flux = extract_order_summed(science_data, trace_data, order_num)
+        
+        if x_pixels is None:
+            print(f"  ! Пропуск: не удалось извлечь")
+            continue
+        
+        # Применить калибровку (нативная сетка!)
+        model = np.poly1d(slice_calib['model'])
+        wavelengths = model(x_pixels)
+        
+        # Вычислить ошибки
+        error_adu = np.sqrt(np.maximum(flux, 1e-6) * gain + ron_e**2) / gain
+        
+        # Сохранить
+        results[order_num] = {
+            'wavelength': wavelengths,
+            'flux': flux,
+            'error': error_adu,
+            'model_coeffs': slice_calib['model'],
+            'rms': slice_calib.get('rms_angstrom', 0.0)
+        }
+        
+        # Сохранить FITS если указана директория
+        if output_dir:
+            save_spectrum_native(
+                results[order_num],
+                output_dir / f"{science_file.stem}_order_{order_num:02d}.fits",
+                header
+            )
+        
+        print(f"  ✓ {len(wavelengths)} точек, "
+              f"λ = {wavelengths[0]:.1f}-{wavelengths[-1]:.1f} Å")
+    
+    print(f"\n✓ Обработано срезов: {len(results)}")
+    if output_dir:
+        print(f"  Сохранено в: {output_dir}")
+    
+    return results
+
+
+def save_spectrum_native(spectrum_data, output_file, original_header=None):
+    """
+    Сохраняет спектр в FITS с нативной сеткой
+    """
+    # Primary: поток
+    primary = fits.PrimaryHDU(spectrum_data['flux'])
+    
+    # Копировать исходный заголовок
+    if original_header:
+        for key in original_header:
+            if key not in ['SIMPLE', 'BITPIX', 'NAXIS', 'NAXIS1', 'NAXIS2', 'EXTEND']:
+                try:
+                    primary.header[key] = original_header[key]
+                except:
+                    pass
+    
+    # WCS заголовок (полиномиальный)
+    primary.header['CTYPE1'] = 'WAVE'
+    primary.header['CUNIT1'] = 'Angstrom'
+    primary.header['DISPTYPE'] = 'POLYNOMIAL'
+    primary.header['DC-FLAG'] = 0
+    
+    # Полином дисперсии
+    coeffs = spectrum_data['model_coeffs']
+    primary.header['CD_DEG'] = len(coeffs) - 1
+    for i, coeff in enumerate(coeffs[::-1]):
+        primary.header[f'CD1_{i}'] = coeff
+    
+    # Калибровочная информация
+    primary.header['CAL_RMS'] = (spectrum_data.get('rms', 0.0), 'RMS of calibration (Angstrom)')
+    primary.header['CRVAL1'] = spectrum_data['wavelength'][0]
+    primary.header['CRPIX1'] = 1.0
+    primary.header['WAVEMIN'] = spectrum_data['wavelength'].min()
+    primary.header['WAVEMAX'] = spectrum_data['wavelength'].max()
+    
+    # Extension: таблица длин волн
+    col_wave = fits.Column(name='WAVELENGTH', format='D', unit='Angstrom',
+                          array=spectrum_data['wavelength'])
+    col_flux = fits.Column(name='FLUX', format='D', unit='ADU',
+                          array=spectrum_data['flux'])
+    col_err = fits.Column(name='ERROR', format='D', unit='ADU',
+                         array=spectrum_data['error'])
+    
+    table = fits.BinTableHDU.from_columns(
+        [col_wave, col_flux, col_err],
+        name='WAVELENGTH'
+    )
+    
+    # Сохранить
+    hdul = fits.HDUList([primary, table])
+    hdul.writeto(output_file, overwrite=True)
+
+
+def visualize_calibrated_spectra(calibrated_data, output_file, title=""):
+    """
+    Визуализирует все откалиброванные спектры на ОДНОМ графике
+    
+    Все 14 срезов наложены друг на друга с разными цветами
+    """
+    fig, ax = plt.subplots(1, 1, figsize=(16, 10))
+    
+    # Цветовая карта для 14 срезов
+    colors = plt.cm.tab20(np.linspace(0, 1, 14))
+    
+    # Если передан dict, сортируем по номеру среза
+    if isinstance(calibrated_data, dict):
+        order_nums = sorted(calibrated_data.keys())
+    else:
+        order_nums = range(1, 15)
+    
+    # Найти глобальные мин/макс для осей
+    all_wavelengths = []
+    all_fluxes = []
+    
+    for order_num in order_nums:
+        if order_num in calibrated_data:
+            data = calibrated_data[order_num]
+            all_wavelengths.extend(data['wavelength'])
+            all_fluxes.extend(data['flux'])
+    
+    # Нарисовать все спектры
+    for i, order_num in enumerate(order_nums):
+        if order_num not in calibrated_data:
+            continue
+        
+        data = calibrated_data[order_num]
+        
+        # Рисуем спектр
+        label = f'Срез {order_num}'
+        if 'rms' in data and data['rms'] > 0:
+            label += f' (RMS={data["rms"]:.3f} Å)'
+        
+        ax.plot(data['wavelength'], data['flux'], 
+               color=colors[i], lw=0.8, alpha=1.0, label=label)
+    
+    ax.set_xlabel('Длина волны (Å)', fontsize=14, fontweight='bold')
+    ax.set_ylabel('Поток (ADU)', fontsize=14, fontweight='bold')
+    ax.grid(True, alpha=0.3, linestyle=':')
+    
+    if title:
+        ax.set_title(title, fontsize=16, fontweight='bold')
+    else:
+        ax.set_title('Откалиброванные спектры всех срезов (нативная сетка)',
+                    fontsize=16, fontweight='bold')
+    
+    plt.tight_layout()
+    
+    # Сохранение: векторный формат (PDF/SVG) или растровый (PNG)
+    # Определяется автоматически по расширению файла
+    output_path = Path(output_file)
+    if output_path.suffix.lower() in ['.pdf', '.svg']:
+        plt.savefig(output_file, bbox_inches='tight')
+    else:
+        plt.savefig(output_file, dpi=150, bbox_inches='tight')
+    
+    plt.close()
+    
+    print(f"\n✓ Визуализация сохранена: {output_file}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Применяет 2D калибровочное решение для линеаризации спектров.")
-    parser.add_argument("science_fits", type=str, help="Путь к научному FITS-файлу.")
-    parser.add_argument("trace_file", type=str, help="Путь к JSON-файлу с трассировкой.")
-    parser.add_argument("solution_json", type=str, help="Путь к JSON-файлу с калибровочным решением.")
-    parser.add_argument("output_dir", type=str, help="Директория для сохранения линеаризованных FITS-файлов.")
+    parser = argparse.ArgumentParser(
+        description="Применяет дисперсионную калибровку к спектрам"
+    )
+    parser.add_argument("science_fits", help="Путь к научному FITS-файлу")
+    parser.add_argument("trace_file", help="Путь к JSON-файлу с трассировкой")
+    parser.add_argument("calibration", help="Путь к JSON-файлу с калибровкой")
+    parser.add_argument("--output-dir", default=None,
+                       help="Директория для сохранения FITS")
+    parser.add_argument("--visualize", help="Создать визуализацию (PNG файл)")
+    parser.add_argument("--gain", type=float, default=2.78,
+                       help="Gain детектора (e-/ADU)")
+    parser.add_argument("--ron", type=float, default=5.6,
+                       help="Read-out noise (e-)")
+    
     args = parser.parse_args()
-
-    # --- 1. Загрузка данных и настройка ---
-    print("--- 1. Загрузка данных ---")
-    science_data, header, _ = fits_loader(args.science_fits)
-    trace_data = load_json_file(args.trace_file)
-    solution = load_json_file(args.solution_json)
-    if not trace_data or not solution: print("Ошибка: не удалось загрузить файлы. Выход."); return
     
-    # Считываем параметры камеры или используем значения по умолчанию
-    GAIN = header.get('GAIN', 2.78)
-    RON_E = header.get('RON', 5.6)
+    # Применить калибровку
+    output_dir = Path(args.output_dir) if args.output_dir else None
     
-    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-    print(f"   -> Калибровка '{solution['metadata']['lamp_fits_file']}' загружена.")
-    print(f"   -> Параметры CCD: GAIN={GAIN:.2f}, RON={RON_E:.2f}")
-
-    # --- 2. Восстановление калибровочных моделей ---
-    print("\n--- 2. Восстановление калибровочных моделей ---")
-    # Восстанавливаем опорную модель как объект NumPy для удобства вычислений
-    ref_disp_model_np = np.poly1d(solution['reference_dispersion_solution']['coeffs'])
+    results = apply_calibration_native(
+        science_file=Path(args.science_fits),
+        trace_file=Path(args.trace_file),
+        calibration_file=Path(args.calibration),
+        output_dir=output_dir,
+        gain=args.gain,
+        ron_e=args.ron
+    )
     
-    # Восстанавливаем модели искажений как объекты Astropy
-    distortion_models = {
-        int(order_num): models.Polynomial1D(degree=model_data['degree'], **{f'c{i}': c for i, c in enumerate(model_data['coeffs'])})
-        for order_num, model_data in solution['distortion_models'].items()
-    }
-    print("   -> Модели успешно восстановлены.")
-
-    # --- 3. Линеаризация каждого порядка ---
-    print("\n--- 3. Выполнение линеаризации (Oversampling для каждого порядка) ---")
-    resampler = resample.FluxConservingResampler(extrapolation_treatment='zero_fill')
-    resampled_spectra_list = []
-
-    for order_info in trace_data['orders']:
-        order_num = order_info['order_number']
-        
-        # Шаг 3.1: Извлекаем 1D спектр (поток vs. пиксель)
-        x_coords_orig, flux_orig = extract_order(science_data, trace_data, order_num)
-        
-        # Шаг 3.2: Строим полную нелинейную модель дисперсии для этого порядка
-        distortion_model = distortion_models.get(order_num)
-        if distortion_model is None:
-            print(f" ! Пропуск порядка {order_num}: модель искажения не найдена.")
-            continue
-        
-        # Находим обратную функцию для смещения итеративно, как вы и делали
-        def get_p_ref(p):
-            p_ref = p.copy()
-            for _ in range(5): p_ref = p - distortion_model(p_ref)
-            return p_ref
-        
-        # Полная модель: пиксель -> длина волны
-        def effective_model_func(p): return ref_disp_model_np(get_p_ref(p))
-        
-        # Шаг 3.3: Вычисляем нелинейную ось длин волн и проверяем ее качество
-        wavelengths_orig = effective_model_func(x_coords_orig)
-        
-        # Проверка на монотонность. Необходима для specutils.
-        diffs = np.diff(wavelengths_orig)
-        if not (np.all(diffs > 0) or np.all(diffs < 0)):
-             print(f" ! ОШИБКА: Дисперсионная кривая для порядка {order_num} не монотонна! Пропуск.")
-             continue
-        if np.any(np.isinf(wavelengths_orig)) or np.any(np.isnan(wavelengths_orig)):
-             print(f" ! ОШИБКА: Дисперсионная кривая для порядка {order_num} содержит NaN/inf! Пропуск.")
-             continue
-
-        # Шаг 3.4: Рассчитываем ошибку и создаем объект Spectrum1D
-        error_adu = np.sqrt(np.maximum(flux_orig, 0) * GAIN + RON_E**2) / GAIN
-        input_spectrum = Spectrum1D(
-            flux=flux_orig * u.adu, 
-            spectral_axis=wavelengths_orig * u.AA,
-            uncertainty=StdDevUncertainty(error_adu * u.adu)
+    if not results:
+        print("Ошибка: калибровка не выполнена")
+        return
+    
+    # Визуализация
+    if args.visualize:
+        sci_name = Path(args.science_fits).stem
+        visualize_calibrated_spectra(
+            calibrated_data=results,
+            output_file=Path(args.visualize),
+            title=f'Откалиброванный спектр: {sci_name}'
         )
-        
-        # Шаг 3.5: (ИСПРАВЛЕНО) Создаем НОВУЮ, УНИКАЛЬНУЮ сетку для ЭТОГО порядка
-        w_start, w_end = input_spectrum.spectral_axis.min().value, input_spectrum.spectral_axis.max().value
-        dw_min = np.min(np.abs(np.diff(input_spectrum.spectral_axis.value)))
-        if dw_min == 0:
-            print(f" ! ОШИБКА: Нулевой шаг по длинам волн в порядке {order_num}. Пропуск."); continue;
-        n_new = int(np.ceil((w_end - w_start) / dw_min)) + 1
-        target_grid = np.linspace(w_start, w_start + (n_new - 1) * dw_min, n_new) * u.AA
-
-        print(f"   -> Порядок {order_num}: {len(x_coords_orig)} пикс. -> {n_new} пикс. (шаг {dw_min:.4f} Å)")
-        
-        # Шаг 3.6: Выполняем передискретизацию
-        spectrum_resampled = resampler(input_spectrum, target_grid)
-        resampled_spectra_list.append((order_num, spectrum_resampled))
-        
-        # Шаг 3.7: Сохраняем результат в отдельный FITS-файл
-        hdu = fits.PrimaryHDU(spectrum_resampled.flux.value, header=header)
-        hdu.header['CRVAL1'] = spectrum_resampled.spectral_axis.min().value
-        hdu.header['CDELT1'] = dw_min
-        hdu.header['CRPIX1'] = 1
-        hdu.header['CUNIT1'] = 'Angstrom'
-        # Добавляем информацию о происхождении
-        hdu.header['HISTORY'] = 'Wavelength calibrated and resampled.'
-        hdu.header['HISTORY'] = f"Source solution: {Path(args.solution_json).name}"
-        hdu.header['HISTORY'] = f"Original order number: {order_num}"
-        
-        output_path = Path(args.output_dir) / f"order_{order_num:02d}.fits"
-        hdu.writeto(output_path, overwrite=True)
-        
-
-    print("\n--- 4. Визуализация итогового спектра ---")
-    if not resampled_spectra_list:
-        print("Не удалось откалибровать ни одного спектра."); return
-
-    fig, ax = plt.subplots(figsize=(16, 8))
     
-    # Находим опорный спектр для определения смещения
-    ref_order_num = solution['metadata']['reference_order']
-    ref_spec_tuple = next((s for s in resampled_spectra_list if s[0] == ref_order_num), None)
-    offset_flux = ref_spec_tuple[1].flux.value if ref_spec_tuple else resampled_spectra_list[0][1].flux.value
-    offset = np.nanmax(offset_flux) * 0.7 if np.any(offset_flux) else 1.0
-
-    for i, (order_num, spec) in enumerate(resampled_spectra_list):
-        ax.plot(spec.spectral_axis, spec.flux.value, lw=1, label=f"П.{order_num}")
-
-    ax.set_title(f"Откалиброванный спектр: {Path(args.science_fits).name}", fontsize=16)
-    ax.set_xlabel("Длина волны (Å)"); ax.set_ylabel("Поток (смещен)")
-    ax.grid(True, linestyle=':'); ax.legend(ncol=7, loc='upper right')
-    plt.tight_layout(); plt.show()
+    print("\n" + "="*80)
+    print("ГОТОВО!")
+    print("="*80)
 
 
 if __name__ == '__main__':

@@ -71,7 +71,7 @@ def subtract_scattered_light(dir_name, list_name, out_list_name, border_width=90
                 mask = diff > thresh
                 bg_fil = np.where(mask, bg_filtered, background)
                 corrected = data - bg_fil
-               # corrected = np.clip(corrected, 0, None)
+                corrected = np.clip(corrected, 0, None) # убираем отрицательные значения
     
                 pyfits.writeto(out_name, corrected, header, overwrite=True)
                 pyfits.writeto(out_bg_name, bg_fil, header, overwrite=True)

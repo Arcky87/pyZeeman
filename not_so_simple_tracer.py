@@ -353,7 +353,8 @@ def find_order_boundaries_from_flat(flat_file,
             print(f"Применено сглаживание с sigma={smooth_sigma}")
         
         # Поиск пиков (спектральных порядков)
-        prominence = np.percentile(vertical_profile, 25)
+     #   prominence = np.percentile(vertical_profile, 25)
+        prominence = 50
         peaks, properties = find_peaks(vertical_profile, prominence=prominence, width=4)
         
         # Отбираем нужное количество порядков
@@ -464,9 +465,10 @@ def save_order_boundaries(peaks, bounds, flat_file, output_path):
 def trace_single_spectrum(spec_file, peaks, bounds, 
                          n_points_for_fit=10,
                          getxwd_gauss=True,
-                         plot=True, 
                          save_plots=False,
-                         plots_path=None):
+                         plots_path=None,
+                         show_point_fits=False,
+                         show_final_traces=True):
     """
     Трассировка спектральных порядков для одного изображения
     
@@ -540,14 +542,14 @@ def trace_single_spectrum(spec_file, peaks, bounds,
                         width_getxwd, center_getxwd, local_popt = estimate_width_getxwd(
                             local_profile, y_positions, gauss=getxwd_gauss)
                         
-                        if plot and x % (step_size * 5) == 0:  # Показываем каждый 5-й результат
+                        if show_point_fits and x % (step_size * 5) == 0:  # Показываем каждый 5-й результат
                             plot_order_fit(spec_data, x, local_profile, y_positions,
                                          order_num, width_getxwd, fit_params=local_popt)
                     else:
                         width_getxwd, center_getxwd = estimate_width_getxwd(
                             local_profile, y_positions, gauss=getxwd_gauss)
                         
-                        if plot and x % (step_size * 5) == 0:  # Показываем каждый 5-й результат
+                        if show_point_fits and x % (step_size * 5) == 0:  # Показываем каждый 5-й результат
                             plot_order_fit(spec_data, x, local_profile, y_positions,
                                          order_num, width_getxwd, fit_params=None)
                     
@@ -599,7 +601,7 @@ def trace_single_spectrum(spec_file, peaks, bounds,
                 print(f"  ПРЕДУПРЕЖДЕНИЕ: Недостаточно точек для порядка {order_num}")
                 
         # Визуализация результата трассировки
-        if plot and traced_orders:
+        if (show_final_traces or save_plots) and traced_orders:
             z_scale = ZScaleInterval()
             z1, z2 = z_scale.get_limits(spec_data)
             
@@ -631,8 +633,11 @@ def trace_single_spectrum(spec_file, peaks, bounds,
             
             if save_plots and plots_path:
                 plt.savefig(plots_path / f"{base_name}_traces.pdf")
-            plt.pause(0.01)
-            plt.close()
+            
+            if show_final_traces:
+                plt.show()
+            else:
+                plt.close()
         
         # Формируем результаты
         result_data = {
@@ -674,7 +679,8 @@ def trace_orders(flat_file="s_flat.fits",
                 smooth=True, 
                 smooth_sigma=1.0, 
                 getxwd_gauss=True,
-                plot=True, 
+                show_point_fits=False,
+                show_final_traces=True,
                 save_plots=False, 
                 overwrite=False,
                 save_format='json'):
@@ -733,7 +739,7 @@ def trace_orders(flat_file="s_flat.fits",
         n_orders=n_orders,
         smooth=smooth,
         smooth_sigma=smooth_sigma,
-        plot=plot,
+        plot=show_final_traces,  # Используем show_final_traces для визуализации flat
         save_plots=save_plots,
         plots_path=plots_path
     )
@@ -794,7 +800,8 @@ def trace_orders(flat_file="s_flat.fits",
             bounds=bounds,
             n_points_for_fit=n_points_for_fit,
             getxwd_gauss=getxwd_gauss,
-            plot=plot,
+            show_point_fits=show_point_fits,
+            show_final_traces=show_final_traces,
             save_plots=save_plots,
             plots_path=plots_path
         )
