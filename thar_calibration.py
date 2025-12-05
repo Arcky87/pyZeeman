@@ -303,14 +303,43 @@ def find_nearest_line(reference, atlas):
         return right_neighbor
     
 def fit_dispersion_poly(pixel_coords, lambda_coords, poly_deg):
-    """Подгоняет полином к точкам (пиксель, длина волны)."""
+    """
+    Робастная подгонка полинома с автоматической 3σ фильтрацией выбросов.
+    
+    Выполняет одну итерацию sigma-clipping для отсечения выбросов,
+    затем подгоняет полином на отфильтрованных данных.
+    
+    Parameters:
+    -----------
+    pixel_coords : array-like
+        Координаты пиков (пиксели)
+    lambda_coords : array-like
+        Длины волн
+    poly_deg : int
+        Степень полинома
+    
+    Returns:
+    --------
+    np.poly1d
+        Подогнанная модель полинома
+    """
     if len(pixel_coords) <= poly_deg:
         raise ValueError(f"Для подгонки полинома степени {poly_deg} нужно как минимум {poly_deg + 1} точек. Предоставлено: {len(pixel_coords)}")
     
     # np.polyfit(x, y, deg) ожидает именно такой порядок
     coeffs = np.polyfit(pixel_coords, lambda_coords, poly_deg)
     # Создаем объект полинома для удобного вычисления значений
-    poly_model = np.poly1d(coeffs)
+    model = np.poly1d(coeffs)
+    # Вычисляем выбросы по критерию 3-sigma
+    residuals = lambda_coords - model(pixel_coords)
+    # Непосредственная фильтрация выбросов
+    mask = np.abs(residuals) <= 3.0 * np.std(residuals)
+
+    if np.sum(mask) > poly_deg:
+        coeffs = np.polyfit(pixel_coords[mask], lambda_coords[mask], poly_deg)
+        poly_model = np.poly1d(coeffs)
+    else:
+        poly_model = model
     return poly_model
 
 def finalize(final_model, calib_points_dict, 
