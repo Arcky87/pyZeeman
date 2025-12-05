@@ -323,6 +323,8 @@ def fit_dispersion_poly(pixel_coords, lambda_coords, poly_deg):
     np.poly1d
         Подогнанная модель полинома
     """
+    pixel_coords = np.array(pixel_coords)
+    lambda_coords = np.array(lambda_coords)
     if len(pixel_coords) <= poly_deg:
         raise ValueError(f"Для подгонки полинома степени {poly_deg} нужно как минимум {poly_deg + 1} точек. Предоставлено: {len(pixel_coords)}")
     

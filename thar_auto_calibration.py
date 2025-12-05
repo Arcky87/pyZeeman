@@ -476,10 +476,12 @@ def calibrate_all_slices_auto(
     }
 #===============================
     if compare_template:
+        thar_dir = thar_file.parent
         # Автоматически выбираем первый ThAr из reference_solution
         template_filename = reference_solution.get('thar_file')
-
-        with fits.open(Path('/data/Observations/test_pyzeeman_final/o018.fts')) as hdut:
+        template_path = thar_dir / template_filename
+        
+        with fits.open(template_path) as hdut:
                 templ_data = hdut[0].data
                 header = hdut[0].header
                 templ_data = np.maximum(templ_data,1e-6)
