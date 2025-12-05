@@ -476,6 +476,9 @@ def calibrate_all_slices_auto(
     }
 #===============================
     if compare_template:
+        # Автоматически выбираем первый ThAr из reference_solution
+        template_filename = reference_solution.get('thar_file')
+
         with fits.open(Path('/data/Observations/test_pyzeeman_final/o018.fts')) as hdut:
                 templ_data = hdut[0].data
                 header = hdut[0].header
