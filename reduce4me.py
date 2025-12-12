@@ -579,7 +579,6 @@ def stage_5_extraction(config, logger):
             continue
         
         # 5.2 Объединение в векторы
-        
         logger.info("\n5.2 Объединение в векторы...")
         try:
             output_base = final_dir / science_file.stem
@@ -597,8 +596,38 @@ def stage_5_extraction(config, logger):
                 logger.info(f"  {output_base}_2.fits")
             else:
                 logger.warning("! Объединение не удалось")
+                continue
         except Exception as e:
             logger.error(f"! Ошибка объединения: {e}")
+            continue
+        
+        # 5.3 Барицентрическая коррекция финальных векторов
+        if config.get('barycentric_correction', {}).get('enabled', True):
+            logger.info("\n5.3 Барицентрическая коррекция...")
+            
+            try:
+                from barycorr import process_vector_files, OBSERVATORY
+                
+                # Получить координаты обсерватории из конфига
+                obs_config = config.get('observatory', OBSERVATORY)
+                
+                # Применить коррекцию к финальным векторам в директории FINAL
+                success = process_vector_files(
+                    final_dir=final_dir,
+                    science_file=science_file,
+                    observatory=obs_config
+                )
+                
+                if success:
+                    logger.info("  ✓ Барицентрическая коррекция применена к финальным векторам")
+                else:
+                    logger.warning("  ! Барицентрическая коррекция не удалась")
+            except Exception as e:
+                logger.error(f"  ! Ошибка барицентрической коррекции: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            logger.info("\n5.3 Барицентрическая коррекция отключена в конфигурации")
     
     logger.info("\n✓ Экстракция и объединение завершены")
     return True
