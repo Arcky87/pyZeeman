@@ -263,11 +263,7 @@ def process_single_order(input_fits: Path,
                         barycorr_kms: float) -> bool:
     """
     Обрабатывает один FITS файл порядка.
-    
-    Структура входного FITS:
-    - HDU[0]: Primary с flux данными
-    - HDU[1]: таблица с колонками wavelength, flux, error
-    
+       
     Parameters:
     -----------
     input_fits : Path
@@ -283,25 +279,19 @@ def process_single_order(input_fits: Path,
     """
     try:
         with fits.open(input_fits) as hdul:
-            # Прочитать данные из таблицы
             data_table = hdul[1].data
             wavelengths = data_table['wavelength']
             flux = data_table['flux']
             error = data_table['error']
             
-            # Применить коррекцию к wavelengths
             corrected_wl = apply_barycentric_correction_to_wavelengths(
                 wavelengths, barycorr_kms
             )
-            
-            # Primary HDU с flux данными (как в save_polarimetry_vector)
             primary = fits.PrimaryHDU(flux)
             
-            # Копировать исходный заголовок
             if hdul[0].header is not None:
                 for card in hdul[0].header.cards:
                     try:
-                        # Пропускаем системные ключи
                         if card.keyword not in ['SIMPLE', 'BITPIX', 'NAXIS', 'NAXIS1', 'NAXIS2', 
                                                'EXTEND', 'CTYPE1', 'CUNIT1', 'CRVAL1', 'CRPIX1', 
                                                'CDELT1', 'CD1_1']:
@@ -313,8 +303,8 @@ def process_single_order(input_fits: Path,
             primary.header['BARYCORR'] = (barycorr_kms, 'Barycentric correction (km/s)')
             primary.header['HIERARCH BARY_APPLIED'] = (True, 'Barycentric correction applied')
             
-            # WCS для скорректированных длин волн
             wl_step = corrected_wl[1] - corrected_wl[0] if len(corrected_wl) > 1 else 1.0
+
             primary.header['CTYPE1'] = 'WAVE'
             primary.header['CUNIT1'] = 'Angstrom'
             primary.header['CRVAL1'] = corrected_wl[0]
@@ -530,9 +520,12 @@ def process_vector_files(final_dir: Path,
     # 6. Применить коррекцию к каждому вектору
     success_count = 0
     for vector_file in vector_files:
-        output_file = vector_file.parent / vector_file.name.replace(
-            '.fits', '_barycorr.fits'
-        )
+        if vector_file.name.endswith('_1.fits'):
+            new_name = vector_file.name.replace('_1.fits', '_barycorr_1.fits')
+        elif vector_file.name.endswith('_2.fits'):
+            new_name = vector_file.name.replace('_2.fits', '_barycorr_2.fits')
+        
+        output_file = vector_file.parent / new_name
         
         if process_single_order(vector_file, output_file, barycorr_kms):
             success_count += 1
