@@ -603,7 +603,7 @@ def stage_5_extraction(config, logger):
         
         # 5.3 Барицентрическая коррекция финальных векторов
         if config.get('barycentric_correction', {}).get('enabled', True):
-            logger.info("\n5.3 Барицентрическая коррекция...")
+            logger.info(f"\n5.3 Барицентрическая коррекция для...")
             
             try:
                 from barycorr import process_vector_files, OBSERVATORY
