@@ -77,6 +77,14 @@ def setup_logging(data_dir: Path):
     return logger
 
 
+def count_list_entries(list_file: Path) -> int:
+    """Количество непустых строк в списке файлов (0, если списка нет)"""
+    if not list_file.exists():
+        return 0
+    with open(list_file, 'r') as f:
+        return sum(1 for line in f if line.strip())
+
+
 # =============================================================================
 # ЭТАП 1: ПРЕПРОЦЕССИНГ
 # =============================================================================
@@ -176,8 +184,31 @@ def stage_1_preprocessing(config, logger):
     # 1.7 Создание super flat
     logger.info("\n1.7 Создание super flat...")
     s_flat_name = config.get('s_flat_name', 's_flat.fits')
-    sflat_data = medianer(data_dir, temp_dir / 'flat_list.txt', s_flat_name)
-    logger.info(f"✓ Super flat: Mean={sflat_data[0]:.2f}, Median={sflat_data[1]:.2f}, Sigma={sflat_data[2]:.2f}")
+    flat_list = temp_dir / 'flat_list.txt'
+    thar_list = temp_dir / 'thar_list.txt'
+
+    if count_list_entries(flat_list) > 0:
+        source_list = flat_list
+        source_type = 'FLAT'
+    else:
+        n_thars = count_list_entries(thar_list)
+        if n_thars == 0:
+            logger.error("! Нет ни flat, ни ThAr кадров: невозможно создать super flat")
+            return False
+        logger.warning(f"! Список {flat_list.name} пуст: флэты этой ночью не снимались")
+        logger.warning(f"! {s_flat_name} будет построен по {n_thars} кадрам ThAr ({thar_list.name}), "
+                       f"границы порядков будут определяться по ThAr, а не по flat")
+        source_list = thar_list
+        source_type = 'THAR'
+
+    sflat_data = medianer(data_dir, source_list, s_flat_name)
+
+    # Пометить источник super flat в заголовке
+    with fits.open(data_dir / s_flat_name, mode='update') as hdul:
+        hdul[0].header['FLATSRC'] = (source_type, 'Frames used to build super flat')
+
+    logger.info(f"✓ Super flat ({source_type}): Mean={sflat_data[0]:.2f}, "
+                f"Median={sflat_data[1]:.2f}, Sigma={sflat_data[2]:.2f}")
     
     logger.info("\n✓ Препроцессинг завершён")
     return True
@@ -234,6 +265,7 @@ def stage_2_tracing(config, logger):
             n_points_for_fit=config.get('tracing', {}).get('n_points_for_fit', 10),
             smooth=config.get('tracing', {}).get('smooth', False),
             smooth_sigma=config.get('tracing', {}).get('smooth_sigma',1.0),
+            flat_prominence=config.get('tracing', {}).get('flat_prominence', 50),
             getxwd_gauss=config.get('tracing', {}).get('getxwd_gauss', True),
             show_point_fits=config.get('tracing', {}).get('visualization', {}).get('show_point_fits', False),
             show_final_traces=config.get('tracing', {}).get('visualization', {}).get('show_final_traces', False),
@@ -346,7 +378,7 @@ def stage_4_thar_calibration(config, logger):
         logger.info("="*80)
         
         # Взять первый кадр для примера
-        first_science = science_files[4]
+        first_science = science_files[0]
         
         # Прочитать THAR_REF
         with fits.open(first_science) as hdul:
@@ -365,6 +397,13 @@ def stage_4_thar_calibration(config, logger):
         logger.info("\nЗапуск интерактивной калибровки...")
         logger.info("Следуйте инструкциям в графическом окне!")
         
+        # Параметры поиска линий для интерактивной калибровки
+        interactive_peak_params = config.get('calibration', {}).get('interactive_peak_detection', {
+            'prominence_sigma': 5.0,
+            'width_range': (1.0, 7.5),
+            'distance_pixels': 10
+        })
+
         # Интерактивная калибровка
         try:
             reference_solution = calibrate_first_thar_interactive(
@@ -373,7 +412,9 @@ def stage_4_thar_calibration(config, logger):
                 order_num=reference_order,
                 atlas_file=atlas_file,
                 gain=config.get('gain', 2.78),
-                ron_e=config.get('ron', 5.6)
+                ron_e=config.get('ron', 5.6),
+                poly_degree=config.get('poly_degree', 5),
+                peak_params=interactive_peak_params
             )
             
             if reference_solution:

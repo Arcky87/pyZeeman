@@ -300,6 +300,7 @@ def find_order_boundaries_from_flat(flat_file,
                                    n_orders=14,
                                    smooth=True, 
                                    smooth_sigma=1.0,
+                                   prominence=50,
                                    plot=True,
                                    save_plots=False,
                                    plots_path=None):
@@ -316,6 +317,9 @@ def find_order_boundaries_from_flat(flat_file,
         Применить сглаживание к вертикальному профилю
     smooth_sigma : float
         Параметр сглаживания
+    prominence : float
+        Минимальная значимость (prominence) пика порядка в вертикальном
+        профиле флэта, ADU. Для тусклых флэтов уменьшать (например, до 1)
     plot : bool
         Показывать графики
     save_plots : bool
@@ -346,7 +350,8 @@ def find_order_boundaries_from_flat(flat_file,
         
         # Анализируем вертикальный профиль
         print("Анализ вертикального профиля...")
-        vertical_profile = np.median(flat_data, axis=1)
+       # vertical_profile = np.median(flat_data, axis=1)
+        vertical_profile = flat_data.mean(axis=1)
         
         if smooth:
             vertical_profile = gaussian_filter1d(vertical_profile, sigma=smooth_sigma)
@@ -354,7 +359,7 @@ def find_order_boundaries_from_flat(flat_file,
         
         # Поиск пиков (спектральных порядков)
      #   prominence = np.percentile(vertical_profile, 25)
-        prominence = 50
+        print(f"Поиск пиков: prominence={prominence}")
         peaks, properties = find_peaks(vertical_profile, prominence=prominence, width=4)
         
         # Отбираем нужное количество порядков
@@ -678,6 +683,7 @@ def trace_orders(flat_file="s_flat.fits",
                 n_points_for_fit=10,
                 smooth=True, 
                 smooth_sigma=1.0, 
+                flat_prominence=50,
                 getxwd_gauss=True,
                 show_point_fits=False,
                 show_final_traces=True,
@@ -703,6 +709,8 @@ def trace_orders(flat_file="s_flat.fits",
         Применить сглаживание к вертикальному профилю
     smooth_sigma : float
         Параметр сглаживания
+    flat_prominence : float
+        Минимальная значимость (prominence) пика порядка на флэте, ADU
     getxwd_gauss : bool
         Использовать гауссову аппроксимацию в getxwd
     plot : bool
@@ -739,6 +747,7 @@ def trace_orders(flat_file="s_flat.fits",
         n_orders=n_orders,
         smooth=smooth,
         smooth_sigma=smooth_sigma,
+        prominence=flat_prominence,
         plot=show_final_traces,  # Используем show_final_traces для визуализации flat
         save_plots=save_plots,
         plots_path=plots_path

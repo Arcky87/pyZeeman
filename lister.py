@@ -15,6 +15,7 @@ def lister(data_dir, raw_dir, temp_dir):
             file_list.append(data_dir.joinpath(dir_content[ii]))
     file_list.sort()
     counter = len(file_list)
+    print(f'counter {counter}')
     if len(file_list) > 0:
         bf = open(temp_dir.joinpath('bias_list.txt'), 'w')
         df = open(temp_dir.joinpath('dark_list.txt'), 'w')
@@ -84,6 +85,7 @@ def lister(data_dir, raw_dir, temp_dir):
         ff.close()
         tf.close()
         of.close()
+        print(f"Counter fin: {counter}")
         if not darks:
             os.remove(temp_dir.joinpath('dark_list.txt'))
         if counter==0:

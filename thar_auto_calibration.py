@@ -15,9 +15,11 @@ thar_auto_calibration.py - Модуль автоматической калиб�
 import numpy as np
 import json
 import logging
+import warnings
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from astropy.io import fits
+from scipy.optimize import OptimizeWarning, curve_fit
 
 # Импорты из существующих модулей
 from extract_order_spectrum import extract_order_summed, load_trace_data
@@ -116,519 +118,667 @@ def load_thar_atlas(atlas_file: Path = Path('thar.dat')) -> np.ndarray:
 
 
 # =============================================================================
-# КАЛИБРОВКА
+# ИЗВЛЕЧЕНИЕ 14 СРЕЗОВ И СУБПИКСЕЛЬНЫЙ АНАЛИЗ ЛИНИЙ
 # =============================================================================
+
+def extract_all_14_slices(thar_file: Path,
+                          trace_file: Path,
+                          n_slices: int = 14) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Извлекает 1D спектры всех 14 срезов ThAr кадра по трассировке.
+
+    Returns:
+    --------
+    tuple : (x_coords, slices_flux) где slices_flux имеет форму [n_slices, Nx]
+    """
+    with fits.open(thar_file) as hdul:
+        thar_data = np.maximum(hdul[0].data, 1e-6)
+
+    trace_data = load_trace_data(trace_file)
+    if trace_data is None:
+        raise ValueError(f"Не удалось загрузить файл трассировки: {trace_file}")
+
+    flux_list = []
+    x_coords = None
+
+    for order_num in range(1, n_slices + 1):
+        x, fl = extract_order_summed(thar_data, trace_data, order_num)
+        if fl is None:
+            raise ValueError(f"Не удалось извлечь срез {order_num} из {thar_file}")
+        flux_list.append(fl)
+        if x_coords is None and x is not None:
+            x_coords = x
+
+    if x_coords is None:
+        x_coords = np.arange(thar_data.shape[1], dtype=np.float64)
+
+    return x_coords, np.array(flux_list, dtype=np.float64)
+
+
+def _gauss_bg(x: np.ndarray, a: float, c: float, s: float, b: float) -> np.ndarray:
+    return a * np.exp(-0.5 * ((x - c) / s) ** 2) + b
+
+
+def gauss_center(v: np.ndarray,
+                 x0: float,
+                 fit_half: int = 8,
+                 sigma_max: float = 4.0,
+                 sigma0: float = 1.2) -> Optional[float]:
+    """
+    Субпиксельное уточнение центра спектральной линии по гауссовой подгонке с фоном.
+    """
+    if not np.isfinite(x0):
+        return None
+    i = round(x0)
+    i0, i1 = i - fit_half, i + fit_half
+    if i0 < 0 or i1 >= v.size:
+        return None
+    x = np.arange(i0, i1 + 1, dtype=np.float64)
+    y = v[i0:i1 + 1]
+    p0 = [float(y.max() - y.min()), float(x0), sigma0, float(y.min())]
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", OptimizeWarning)
+            p, _ = curve_fit(_gauss_bg, x, y, p0=p0, maxfev=2000)
+    except (RuntimeError, ValueError):
+        return None
+
+    a, c, s = p[0], p[1], abs(p[2])
+    if not (a > 0 and 0.4 <= s <= sigma_max and i0 <= c <= i1):
+        return None
+    return float(c)
+
+
+def channel_shift(a: np.ndarray, b: np.ndarray, max_lag: int = 30) -> int:
+    """
+    Целочисленный сдвиг профиля b относительно профиля a по максимуму кросскорреляции.
+    """
+    lags = np.arange(-max_lag, max_lag + 1)
+    cc = [np.dot(a[max_lag:-max_lag], np.roll(b, -lag)[max_lag:-max_lag]) for lag in lags]
+    return int(lags[int(np.argmax(cc))])
+
+
+def prepare_display_spectra(slices_flux: np.ndarray,
+                            gamma: float = 0.4,
+                            bg_half: int = 5) -> np.ndarray:
+    """
+    Подготовка спектров для интерактивного отображения (I^gamma + вычет фона).
+    """
+    out = np.empty_like(slices_flux)
+    x = np.arange(slices_flux.shape[1])
+    w = bg_half
+    for j, v in enumerate(slices_flux):
+        v_clipped = np.where(v < 1.0, 1.0, v) ** gamma
+        mins = [i for i in range(w, v_clipped.size - w) if v_clipped[i] == v_clipped[i - w:i + w + 1].min()]
+        bg = np.interp(x, mins, v_clipped[mins]) if len(mins) > 2 else np.full_like(v_clipped, v_clipped.min())
+        out[j] = np.clip(v_clipped - bg, 0, None)
+    return out
+
+
+def locate_line_across_slices(slices_flux: np.ndarray,
+                              x_click: float,
+                              click_slice: int,
+                              shifts: List[int],
+                              eps: int = 15) -> Optional[List[float]]:
+    """
+    Определяет субпиксельные координаты линии во всех 14 срезах по клику в click_slice.
+    """
+    n_slices = slices_flux.shape[0]
+    nx = slices_flux.shape[1]
+    x_base = x_click - shifts[click_slice]
+    xs = []
+    for k in range(n_slices):
+        g = x_base + shifts[k]
+        lo, hi = int(g) - eps, int(g) + eps
+        if lo < 2 or hi >= nx - 2:
+            return None
+        pk = lo + int(np.argmax(slices_flux[k, lo:hi + 1]))
+        c = gauss_center(slices_flux[k], float(pk))
+        if c is None:
+            p_sub = np.polyfit(np.arange(pk - 2, pk + 3, dtype=float),
+                               slices_flux[k, pk - 2:pk + 3], 2)
+            c = float(-p_sub[1] / (2.0 * p_sub[0])) if p_sub[0] < 0 else float(pk)
+        xs.append(float(c))
+    return xs
+
+def load_partial_marks(partial_path: Path) -> List[Dict]:
+    """Загружает сохраненную разметку из partial JSON файла"""
+    if not partial_path.exists():
+        return []
+    try:
+        with open(partial_path, 'r') as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                return data
+            return data.get('marks', [])
+    except Exception as e:
+        logger.warning(f"Не удалось загрузить {partial_path}: {e}")
+        return []
+
+
+def save_partial_marks(partial_path: Path, marks: List[Dict]) -> None:
+    """Сохраняет разметку в partial JSON файл для защиты от сбоев"""
+    try:
+        partial_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(partial_path, 'w') as f:
+            json.dump({'marks': marks}, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Ошибка автосохранения partial: {e}")
+
+
+def remove_nearest_mark(marks: List[Dict],
+                        x_click: float,
+                        slice_idx: int) -> Optional[float]:
+    """Удаляет из списка разметки ближайшую к клику линию"""
+    if not marks:
+        return None
+    distances = [abs(m['pixels'][slice_idx] - x_click) for m in marks]
+    min_idx = int(np.argmin(distances))
+    if distances[min_idx] < 25.0:
+        removed = marks.pop(min_idx)
+        return removed['wavelength']
+    return None
+
+
+def build_reference_solution_dict(marks: List[Dict],
+                                  thar_file: Path,
+                                  poly_degree: int = 5,
+                                  reference_order: int = 4) -> Dict:
+    """
+    Строит полное полиномиальное решение для всех 14 срезов по отождествленным линиям.
+    Формат полностью совместим со структурой FULL.json и apply_calibration.py.
+    """
+    n_slices = len(marks[0]['pixels'])
+    slices_dict = {}
+
+    for s_idx in range(n_slices):
+        order_num = s_idx + 1
+        x_pts = np.array([m['pixels'][s_idx] for m in marks], dtype=np.float64)
+        lam_pts = np.array([m['wavelength'] for m in marks], dtype=np.float64)
+        sort_idx = np.argsort(x_pts)
+        x_pts = x_pts[sort_idx]
+        lam_pts = lam_pts[sort_idx]
+
+        deg = min(poly_degree, len(x_pts) - 1)
+        poly = fit_dispersion_poly(x_pts, lam_pts, deg)
+        coeffs = poly.c
+        residuals = lam_pts - poly(x_pts)
+        rms = float(np.sqrt(np.mean(residuals ** 2)))
+
+        calib_points = {str(float(px)): float(wl) for px, wl in zip(x_pts, lam_pts)}
+
+        slices_dict[str(order_num)] = {
+            'model': coeffs.tolist(),
+            'model_degree': int(deg),
+            'rms_angstrom': float(rms),
+            'rms_pixels': float(rms / 0.12),
+            'n_lines': len(x_pts),
+            'quality': 'excellent' if rms <= 0.05 else ('good' if rms <= 0.09 else 'warning'),
+            'is_reference': (order_num == reference_order),
+            'drift_from_template_pixels': 0.0,
+            'calib_points': calib_points,
+            'all_peaks': x_pts.tolist()
+        }
+
+    return {
+        'thar_file': thar_file.name,
+        'reference_order': reference_order,
+        'poly_degree': poly_degree,
+        'marks': marks,
+        'slices': slices_dict
+    }
+
+
+def run_interactive_14_slices_gui(slices_raw: np.ndarray,
+                                  shifts: List[int],
+                                  atlas_lines: np.ndarray,
+                                  out_solution: Path,
+                                  partial_path: Path,
+                                  thar_file: Path,
+                                  poly_degree: int = 5,
+                                  initial_gamma: float = 0.4) -> Optional[Dict]:
+    """
+    Интерактивный GUI Matplotlib: 14 субплотов спектров со связанной осью X.
+    Левый клик по линии в любом срезе находит ее положение во всех 14 срезах.
+    Ввод длины волны в текстовое поле фиксирует линию в эталоне.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.widgets import Button, TextBox
+
+    n_slices = slices_raw.shape[0]
+    nx = slices_raw.shape[1]
+
+    state = {
+        'gamma': initial_gamma,
+        'pending_xs': None,
+        'pending_slice': None,
+        'marks': load_partial_marks(partial_path),
+        'saved': False,
+        'result': None,
+        'busy_clear': False
+    }
+
+    fig, axes = plt.subplots(n_slices, 1, figsize=(16, 9), sharex=True)
+    fig.canvas.manager.set_window_title(f"pyZeeman - Отождествление линий ThAr: {thar_file.name} (14 срезов)")
+    plt.subplots_adjust(left=0.07, right=0.98, top=0.94, bottom=0.14, hspace=0.08)
+
+    curves = []
+    for k, ax in enumerate(axes):
+        order_num = k + 1
+        beam = "U" if order_num <= 7 else "L"
+        color = "#1f77b4" if beam == "U" else "#2ca02c"
+        ln, = ax.plot(np.arange(nx), np.zeros(nx), color=color, lw=0.6)
+        curves.append(ln)
+        ax.set_ylabel(f"С{order_num:02d} ({beam})", fontsize=7, labelpad=2)
+        ax.tick_params(axis='both', which='both', labelsize=6, pad=1)
+        ax.grid(True, alpha=0.25, linestyle=':')
+
+    axes[-1].set_xlabel("X (пиксели дисперсии)", fontsize=9, labelpad=2)
+
+    ax_tb_lam = fig.add_axes([0.08, 0.04, 0.13, 0.045])
+    tb_lam = TextBox(ax_tb_lam, 'λ, Å: ', initial='')
+
+    ax_tb_gam = fig.add_axes([0.27, 0.04, 0.06, 0.045])
+    tb_gam = TextBox(ax_tb_gam, 'γ: ', initial=f"{state['gamma']:.2g}")
+
+    ax_btn_gup = fig.add_axes([0.34, 0.04, 0.065, 0.045])
+    btn_gup = Button(ax_btn_gup, 'γ ×1.25')
+
+    ax_btn_gdn = fig.add_axes([0.41, 0.04, 0.065, 0.045])
+    btn_gdn = Button(ax_btn_gdn, 'γ ÷1.25')
+
+    ax_btn_save = fig.add_axes([0.79, 0.04, 0.09, 0.045])
+    btn_save = Button(ax_btn_save, 'Записать')
+
+    ax_btn_done = fig.add_axes([0.89, 0.04, 0.09, 0.045])
+    btn_done = Button(ax_btn_done, 'Готово')
+
+    status_text = fig.text(0.08, 0.015, "", fontsize=9, color="#004d40")
+    art = {'pending': [], 'marks': []}
+
+    def say(msg: str):
+        status_text.set_text(msg)
+        logger.info(msg)
+        fig.canvas.draw_idle()
+
+    def draw_marks():
+        for a in art['marks']:
+            try:
+                a.remove()
+            except Exception:
+                pass
+        art['marks'] = []
+
+        top_ax = axes[0]
+        y_max = top_ax.get_ylim()[1]
+
+        for m in state['marks']:
+            lam = m['wavelength']
+            xs = m['pixels']
+            for k, ax in enumerate(axes):
+                vl = ax.axvline(xs[k], color='red', lw=0.7, alpha=0.85)
+                art['marks'].append(vl)
+            txt = top_ax.text(xs[0], y_max * 0.95, f"{lam:.2f}",
+                              rotation=90, fontsize=6, va='top', ha='center', color='red')
+            art['marks'].append(txt)
+
+        fig.canvas.draw_idle()
+
+    def draw_pending():
+        for a in art['pending']:
+            try:
+                a.remove()
+            except Exception:
+                pass
+        art['pending'] = []
+
+        if state['pending_xs'] is not None:
+            for k, ax in enumerate(axes):
+                vl = ax.axvline(state['pending_xs'][k], color='orange', lw=1.2, ls='--')
+                art['pending'].append(vl)
+
+        fig.canvas.draw_idle()
+
+    def redraw_spectra():
+        disp_data = prepare_display_spectra(slices_raw, gamma=state['gamma'])
+        for k, (ax, ln) in enumerate(zip(axes, curves)):
+            ln.set_ydata(disp_data[k])
+            ax.relim()
+            ax.autoscale_view(scalex=False)
+
+        axes[0].set_title(
+            f"Калибровка 14 срезов | ЛКМ — выбрать линию во всех 14 срезах | Ввод λ в поле внизу + Enter | ПКМ — удалить | Линий: {len(state['marks'])}",
+            fontsize=9, pad=3
+        )
+        draw_marks()
+        draw_pending()
+
+    def on_click(ev):
+        if ev.inaxes not in axes or ev.xdata is None:
+            return
+        tb = fig.canvas.toolbar
+        if tb is not None and getattr(tb, "mode", ""):
+            return
+
+        k = list(axes).index(ev.inaxes)
+
+        if ev.button == 1:
+            xs = locate_line_across_slices(slices_raw, ev.xdata, k, shifts, eps=15)
+            if xs is None:
+                say("Линия слишком близко к краю спектра")
+                return
+            state['pending_xs'] = xs
+            state['pending_slice'] = k
+            draw_pending()
+
+            suggest_str = ""
+            if len(state['marks']) >= 3 and len(atlas_lines) > 0:
+                ref_xs = [m['pixels'][0] for m in state['marks']]
+                ref_lams = [m['wavelength'] for m in state['marks']]
+                deg = min(2, len(ref_xs) - 1)
+                p_cur = np.polyfit(ref_xs, ref_lams, deg)
+                pred_lam = float(np.polyval(p_cur, xs[0]))
+                nearest = find_nearest_line(pred_lam, atlas_lines)
+                if nearest is not None and abs(nearest - pred_lam) < 5.0:
+                    suggest_str = f" [подсказка атласа: {nearest:.4f} Å]"
+
+            say(f"Выбрана линия в срезе {k + 1}: x={xs[k]:.2f}. Введите λ в поле внизу и нажмите Enter{suggest_str}")
+
+        elif ev.button == 3:
+            lam = remove_nearest_mark(state['marks'], ev.xdata, k)
+            if lam is not None:
+                save_partial_marks(partial_path, state['marks'])
+                say(f"Удалена линия λ={lam:.2f}. Всего линий: {len(state['marks'])}")
+                redraw_spectra()
+
+    def clear_lambda():
+        state['busy_clear'] = True
+        tb_lam.set_val("")
+        state['busy_clear'] = False
+        tb_lam.stop_typing()
+
+    def on_lambda_submit(text: str):
+        if state['busy_clear'] or not text.strip():
+            return
+        if state['pending_xs'] is None:
+            say("Сначала выберите линию кликом мыши на графике")
+            clear_lambda()
+            return
+
+        text = text.strip().replace(",", ".")
+        try:
+            lam = float(text)
+        except ValueError:
+            say(f"Ошибка ввода: '{text}' не является числом")
+            clear_lambda()
+            return
+
+        if not (1000.0 <= lam <= 30000.0):
+            say(f"Длина волны {lam} вне диапазона 1000...30000 Å")
+            clear_lambda()
+            return
+
+        for m in state['marks']:
+            if abs(m['pixels'][0] - state['pending_xs'][0]) < 1.0 or abs(m['wavelength'] - lam) < 0.05:
+                say(f"Линия около x={state['pending_xs'][0]:.1f} уже добавлена как λ={m['wavelength']:.2f}")
+                state['pending_xs'] = None
+                clear_lambda()
+                draw_pending()
+                return
+
+        state['marks'].append({
+            'wavelength': lam,
+            'pixels': [round(float(v), 4) for v in state['pending_xs']]
+        })
+        state['pending_xs'] = None
+        state['pending_slice'] = None
+        clear_lambda()
+        save_partial_marks(partial_path, state['marks'])
+        say(f"Добавлена линия λ={lam:.4f}. Всего линий: {len(state['marks'])}")
+        redraw_spectra()
+
+    def on_gamma_submit(text: str):
+        if state['busy_clear']:
+            return
+        tb_gam.stop_typing()
+        try:
+            g = float(text.strip().replace(",", "."))
+            if g > 0:
+                state['gamma'] = g
+                redraw_spectra()
+                say(f"Гамма изменена: {g:.2g}")
+        except ValueError:
+            pass
+
+    def change_gamma(factor: float):
+        state['gamma'] = max(0.05, min(2.0, state['gamma'] * factor))
+        state['busy_clear'] = True
+        tb_gam.set_val(f"{state['gamma']:.2g}")
+        state['busy_clear'] = False
+        redraw_spectra()
+
+    def do_save(_=None) -> bool:
+        if len(state['marks']) < poly_degree + 1:
+            say(f"Недостаточно линий ({len(state['marks'])} < {poly_degree + 1}). Добавьте еще линии.")
+            return False
+
+        sol = build_reference_solution_dict(state['marks'], thar_file, poly_degree=poly_degree)
+        save_calibration_solution(sol, out_solution)
+        state['saved'] = True
+        state['result'] = sol
+        say(f"✓ Решение успешно сохранено в {out_solution.name}")
+        return True
+
+    def do_done(_=None):
+        if do_save():
+            plt.close(fig)
+
+    tb_lam.on_submit(on_lambda_submit)
+    tb_gam.on_submit(on_gamma_submit)
+    btn_gup.on_clicked(lambda _: change_gamma(1.25))
+    btn_gdn.on_clicked(lambda _: change_gamma(0.80))
+    btn_save.on_clicked(do_save)
+    btn_done.on_clicked(do_done)
+    fig.canvas.mpl_connect("button_press_event", on_click)
+
+    fig._pyzeeman_widgets = (tb_lam, tb_gam, btn_gup, btn_gdn, btn_save, btn_done)
+
+    redraw_spectra()
+    say(f"Сдвиги 14 срезов относительно опорного: {shifts}. Загружено линий: {len(state['marks'])}")
+    plt.show()
+
+    return state['result']
+
+
+
+# =============================================================================
+# ИНТЕРАКТИВНАЯ КАЛИБРОВКА (ТОЧКА ВХОДА)
+# =============================================================================
+
 def calibrate_first_thar_interactive(thar_file: Path,
                                      trace_file: Path,
-                                     order_num: int,
-                                     atlas_file: Path,
-                                     gain: float = 2.0,
-                                     ron_e: float = 5.6) -> Optional[dict]:
+                                     order_num: int = 4,
+                                     atlas_file: Path = Path('thar.dat'),
+                                     gain: float = 2.78,
+                                     ron_e: float = 5.6,
+                                     poly_degree: int = 5,
+                                     peak_params: Optional[dict] = None) -> Optional[Dict]:
     """
-    Интерактивная калибровка первого ThAr (reference)
-    
-    Parameters:
-    -----------
-    thar_file : Path
-        Путь к FITS файлу ThAr
-    trace_file : Path
-        Путь к JSON файлу с трассировкой
-    order_num : int
-        Номер порядка для калибровки
-    atlas_file : Path
-        Путь к атласу линий
-    gain, ron_e : float
-        Параметры детектора
-    
-    Returns:
-    --------
-    dict or None : Калибровочное решение
+    Интерактивная калибровка первого ThAr кадра одновременно для всех 14 срезов.
     """
-    logger.info("="*80)
-    logger.info(f"ИНТЕРАКТИВНАЯ КАЛИБРОВКА: {thar_file.name}, порядок {order_num}")
-    logger.info("="*80)
-    
-    # Загрузить ThAr изображение
-    logger.info(f"Загрузка {thar_file}...")
-    with fits.open(thar_file) as hdul:
-        thar_data = hdul[0].data
-    
-    # Загрузить трассировку
-    trace_data = load_trace_data(trace_file)
-    if trace_data is None:
-        return None
-    
-    # Извлечь спектр (с суммированием между границами)
-    x_coords, flux = extract_order_summed(thar_data, trace_data, order_num)
-  #  x_coords, flux = extract_order(thar_data, trace_data, order_num)
-    if x_coords is None:
-        return None
-    
-    # Загрузить атлас
+    logger.info("=" * 80)
+    logger.info(f"ИНТЕРАКТИВНАЯ КАЛИБРОВКА 14 СРЕЗОВ: {thar_file.name}")
+    logger.info("=" * 80)
+
     atlas_lines = load_thar_atlas(atlas_file)
-    if len(atlas_lines) == 0:
-        return None
-    #TEST:
-    ax=None
-    fig=None
-    import matplotlib.pyplot as plt
-    plt.ion()
-    fig, ax = plot_extracted_spectrum(x_coords, flux, order_num, ax=ax)
-    
-    # Найти и отрисовать пики (используем оригинальную функцию)
-    logger.info("Поиск и отрисовка линий...")
-    found_peaks = find_and_plot_lines(
-        x_coords=x_coords,
-        flux=flux,
-        ax=ax,
-        prominence_sigma=15.0,
-        width_range=(1.8, 3.5),
-        distance_pixels=10
-    )
-    logger.info(f"Найдено {len(found_peaks)} пиков")
-    # Запустить интерактивную калибровку (используем готовую функцию из thar_calibration.py)
-    result = interactive_wavelength_calibration(
-        found_peaks=found_peaks,
+    x_coords, slices_raw = extract_all_14_slices(thar_file, trace_file)
+
+    ref_idx = max(0, min(order_num - 1, 13))
+    shifts = [channel_shift(slices_raw[ref_idx], slices_raw[k], max_lag=30) for k in range(14)]
+    logger.info(f"Относительные сдвиги срезов к срезу {order_num}: {shifts}")
+
+    out_solution = thar_file.parent / "CALIBRATIONS" / "reference_solution.json"
+    partial_path = thar_file.parent / "CALIBRATIONS" / "reference_solution.partial.json"
+
+    solution = run_interactive_14_slices_gui(
+        slices_raw=slices_raw,
+        shifts=shifts,
         atlas_lines=atlas_lines,
-        ax_spectrum=ax,  # Передаём axes для отрисовки
-        x_coords_orig=x_coords,
-        order_num=order_num,
-        initial_calib_points=None
+        out_solution=out_solution,
+        partial_path=partial_path,
+        thar_file=thar_file,
+        poly_degree=poly_degree
     )
-    
-    if result and 'model' in result:
-        solution = {
-            'thar_file': str(thar_file.name),
-            'order_num': order_num,
-            'model': result['model'],
-            'model_degree': result['model_degree'],
-            'calib_points': result['calib_points'],
-            'found_peaks': result['all_peaks_px'],
-            'rms': result.get('rms', 0.0),
-            'n_points': len(result['calib_points'])
-        }
-        
-        logger.info(f"\n✓ Калибровка завершена:")
-        logger.info(f"  Степень полинома: {solution['model_degree']}")
-        logger.info(f"  Опорных точек: {solution['n_points']}")
-        logger.info(f"  RMS: {solution['rms']:.4f} Å")
-        
-        return solution
+
+    if solution is not None:
+        logger.info(f"✓ Интерактивная калибровка 14 срезов завершена успешно")
     else:
-        logger.warning("Калибровка не завершена")
-        return None
+        logger.warning("! Интерактивная калибровка не завершена")
 
-
-def calibrate_thar_auto(thar_file: Path,
-                       trace_file: Path,
-                       order_num: int,
-                       reference_solution: dict,
-                       atlas_file: Path,
-                       max_shift_pixels: float = 3.0,
-                       wavelength_tolerance: float = 0.5,
-                       gain: float = 2.0,
-                       ron_e: float = 5.6) -> Optional[dict]:
-    """
-    Автоматическая калибровка ThAr на основе reference решения
-    
-    Parameters:
-    -----------
-    thar_file : Path
-        Путь к ThAr файлу
-    trace_file : Path
-        Путь к трассировке
-    order_num : int
-        Номер порядка
-    reference_solution : dict
-        Reference решение
-    atlas_file : Path
-        Атлас линий
-    max_shift_pixels : float
-        Максимальный допустимый сдвиг (пиксели)
-    wavelength_tolerance : float
-        Допуск при сопоставлении (Å)
-    
-    Returns:
-    --------
-    dict or None : Калибровочное решение
-    """
-    logger.info(f"Автоматическая калибровка: {thar_file.name}, порядок {order_num}")
-    
-    # Загрузить ThAr
-    with fits.open(thar_file) as hdul:
-        thar_data = hdul[0].data
-    
-    # Загрузить трассировку
-    trace_data = load_trace_data(trace_file)
-    if trace_data is None:
-        return None
-    
-    # Извлечь спектр
-    x_coords, flux = extract_order_summed(thar_data, trace_data, order_num)
-    if x_coords is None:
-        return None
-    
-    # Загрузить атлас
-    atlas_lines = load_thar_atlas(atlas_file)
-    if len(atlas_lines) == 0:
-        return None
-    
-    # Найти пики (для auto режима используем find_peaks_for_order)
-    peak_params = {
-        'prominence_sigma': 15.0,
-        'width_range': (1.8, 3.5),
-        'distance_pixels': 10
-    }
-    found_peaks = find_peaks_for_order(x_coords, flux, peak_params)
-    logger.info(f"  Найдено {len(found_peaks)} пиков")
-    
-    # Применить reference модель
-    ref_model = np.poly1d(reference_solution['model'])
-    predicted_wavelengths = ref_model(found_peaks)
-    
-    # Сопоставить с атласом
-    matched_pairs = []
-    for peak_pixel, pred_lambda in zip(found_peaks, predicted_wavelengths):
-        atlas_lambda = find_nearest_line(pred_lambda, atlas_lines)
-        
-        if atlas_lambda is not None:
-            delta_lambda = abs(atlas_lambda - pred_lambda)
-            if delta_lambda < wavelength_tolerance:
-                matched_pairs.append((peak_pixel, atlas_lambda))
-    
-    logger.info(f"  Сопоставлено {len(matched_pairs)}/{len(found_peaks)} линий")
-    
-    if len(matched_pairs) < 5:
-        logger.warning(f"  Недостаточно линий ({len(matched_pairs)} < 5)")
-        return None
-    
-    # Перефитить полином
-    pixels, wavelengths = zip(*matched_pairs)
-    poly_degree = reference_solution['model_degree']
-    new_coeffs = np.polyfit(pixels, wavelengths, poly_degree)
-    new_model = np.poly1d(new_coeffs)
-    
-    # RMS
-    residuals = [wavelengths[i] - new_model(pixels[i]) for i in range(len(pixels))]
-    rms = np.sqrt(np.mean(np.array(residuals)**2))
-    
-    # Сдвиг относительно reference
-    mid_pixel = len(x_coords) // 2
-    shift_angstrom = abs(new_model(mid_pixel) - ref_model(mid_pixel))
-    dispersion = abs(new_model(mid_pixel + 1) - new_model(mid_pixel))
-    shift_pixels = shift_angstrom / dispersion if dispersion > 0 else 0
-    
-    logger.info(f"  RMS: {rms:.4f} Å, сдвиг: {shift_pixels:.2f} пикс")
-    
-    if shift_pixels > max_shift_pixels:
-        logger.warning(f"  ⚠ Сдвиг превышает лимит ({shift_pixels:.2f} > {max_shift_pixels})")
-    
-    solution = {
-        'thar_file': str(thar_file.name),
-        'order_num': order_num,
-        'model': new_coeffs.tolist(),
-        'model_degree': poly_degree,
-        'calib_points': {str(float(p)): float(w) for p, w in matched_pairs},
-        'rms': float(rms),
-        'n_points': len(matched_pairs),
-        'shift_from_reference_pixels': float(shift_pixels),
-        'reference_used': reference_solution['thar_file']
-    }
-    
     return solution
 
 
+
 # =============================================================================
-# КАЛИБРОВКА ВСЕХ СРЕЗОВ
+# АВТОМАТИЧЕСКАЯ КАЛИБРОВКА СРЕЗОВ (ТОЧКА ВХОДА)
 # =============================================================================
 
-def calibrate_all_slices_auto(
-    thar_file: Path,
-    trace_file: Path,
-    reference_order: int,
-    reference_solution: dict,
-    atlas_file: Path,
-    poly_degree: int = 4,
-    rms_excellent: float = 0.03,
-    rms_good: float = 0.09,
-    rms_warning: float = 0.25,
-    pixel_tolerance: float = 0.5,
-    wavelength_tolerance: float = 0.5,
-    peak_params: dict = None,
-    compare_template: bool = True
-) -> Optional[dict]:
+def calibrate_all_slices_auto(thar_file: Path,
+                             trace_file: Path,
+                             reference_order: int,
+                             reference_solution: dict,
+                             atlas_file: Path,
+                             poly_degree: int = 5,
+                             rms_excellent: float = 0.05,
+                             rms_good: float = 0.09,
+                             rms_warning: float = 0.35,
+                             pixel_tolerance: float = 4.0,
+                             wavelength_tolerance: float = 0.5,
+                             peak_params: Optional[dict] = None,
+                             compare_template: bool = False) -> Optional[Dict]:
     """
-    Калибрует все срезы (кроме reference) автоматически
-    
-    Parameters:
-    -----------
-    thar_file : Path
-        Путь к ThAr файлу
-    trace_file : Path
-        Путь к трассировке
-    reference_order : int
-        Номер опорного среза (уже откалиброван)
-    reference_solution : dict
-        Решение для опорного среза
-    atlas_file : Path
-        Атлас линий
-    poly_degree : int
-        Степень полинома для каждого среза
-    rms_excellent, rms_good, rms_warning : float
-        Пороги качества в Ангстремах
-    
-    Returns:
-    --------
-    dict : Полное решение для всех 14 срезов
-    """
-    logger.info("="*80)
-    logger.info(f"КАЛИБРОВКА ВСЕХ СРЕЗОВ: {thar_file.name}")
-    logger.info(f"Опорный срез: {reference_order}")
-    logger.info("="*80)
+    Автоматическая калибровка всех 14 срезов текущего ThAr на основе 14-срезового эталона.
 
-    import matplotlib.pyplot as plt # удалить после отладки
-    plt.ion()
-    
-    # Загрузить ThAr
-    with fits.open(thar_file) as hdul:
-        thar_data = hdul[0].data
-        header = hdul[0].header
-        thar_data = np.maximum(thar_data, 1e-6)
-    
-    # Загрузить трассировку
-    trace_data = load_trace_data(trace_file)
-    if trace_data is None:
+    Алгоритм:
+    1. Извлекаются все 14 срезов нового кадра.
+    2. Оценивается инструментальный дрейф относительно опорного кадра через кросскорреляцию.
+    3. Для каждой линии эталона в каждом срезе находится точный субпиксельный центр
+       гауссовой подгонкой в узком окне вокруг x_ref + shift.
+    4. Строится полиномиальное дисперсионное решение с 3-sigma фильтрацией выбросов.
+    """
+    logger.info("=" * 80)
+    logger.info(f"АВТОМАТИЧЕСКАЯ КАЛИБРОВКА 14 СРЕЗОВ: {thar_file.name}")
+    logger.info("=" * 80)
+
+    marks = reference_solution.get('marks')
+    if not marks:
+        marks = []
+        slices_ref = reference_solution.get('slices', {})
+        if slices_ref and str(reference_order) in slices_ref:
+            pts_ref = slices_ref[str(reference_order)].get('calib_points', {})
+            for px_str, wl in pts_ref.items():
+                p_val = float(px_str)
+                px_all = []
+                for s in range(1, 15):
+                    s_pts = slices_ref.get(str(s), {}).get('calib_points', {})
+                    best_p = p_val
+                    min_dw = 999.0
+                    for spx, swl in s_pts.items():
+                        if abs(float(swl) - wl) < min_dw:
+                            min_dw = abs(float(swl) - wl)
+                            best_p = float(spx)
+                    px_all.append(best_p)
+                marks.append({'wavelength': float(wl), 'pixels': px_all})
+
+    if not marks or len(marks) < poly_degree + 1:
+        logger.error("! В reference_solution нет достаточного количества линий эталона")
         return None
-    
-    # Загрузить атлас
-    atlas_lines = load_thar_atlas(atlas_file)
-    if len(atlas_lines) == 0:
-        return None
-    
-    # Reference модель
-  #  ref_model = np.poly1d(reference_solution['model'])
-  #  calib_points = reference_solution['calib_points']
-    
-    # Результаты для всех срезов
+
+    x_coords, current_slices = extract_all_14_slices(thar_file, trace_file)
+    n_slices = current_slices.shape[0]
+
     all_slices = {}
-    
-    # Используем переданные параметры или значения по умолчанию
-    if peak_params is None:
-        peak_params = {
-            'prominence_sigma': 15.0,
-            'width_range': (1.8, 3.5),
-            'distance_pixels': 10
-        }
 
-    # ШАГ 1: Калибровать опорный срез ЭТОГО ThAr
-    logger.info(f"\nШаг 1: Калибровка опорного среза {reference_order} для {thar_file.name}...")
-    
-    x_coords_ref, flux_ref = extract_order_summed(thar_data, trace_data, reference_order)
-    if x_coords_ref is None:
-        logger.error("Не удалось извлечь опорный срез")
-        return None
-    
-    # Найти пики в опорном срезе
-    ref_all_peaks = find_peaks_for_order(x_coords_ref, flux_ref, peak_params)
-    logger.info(f"  Найдено {len(ref_all_peaks)} пиков в опорном срезе")
+    for s_idx in range(n_slices):
+        order_num = s_idx + 1
+        ref_x_pts = [m['pixels'][s_idx] for m in marks]
+        ref_wls = [m['wavelength'] for m in marks]
 
-    #Сопоставить пики с интерактивным решением
+        local_shifts = []
+        for x0 in ref_x_pts:
+            i0 = max(2, int(x0) - 10)
+            i1 = min(current_slices.shape[1] - 3, int(x0) + 10)
+            if i1 > i0:
+                pk = i0 + int(np.argmax(current_slices[s_idx, i0:i1 + 1]))
+                local_shifts.append(pk - x0)
 
-    matched_pairs, unmatched = match_peaks(ref_all_peaks, reference_solution['calib_points'], pixel_tolerance)
-  
-    logger.info(f"  Сопоставлено {len(matched_pairs)} пиков с опорным решением. {len(unmatched)} не было сопоставлено!")
+        drift = float(np.median(local_shifts)) if local_shifts else 0.0
 
-    matched_pixels = [pair['found_pixel'] for pair in matched_pairs]
-    wavelengths = [pair['wavelength'] for pair in matched_pairs]
-    disp_model = fit_dispersion_poly(matched_pixels, wavelengths, poly_degree)
-      
- #   ref_wls_interactive = [float(w) for w in reference_solution['calib_points'].values()]
-    ref_wls_full = sorted(set(wavelengths) | set(atlas_lines.tolist()))
-        
-    unmatched_lambda = disp_model(unmatched)
-    unm_atlas_lmb = [find_nearest_line(l, ref_wls_full) for l in unmatched_lambda]
-  #     Добавить фильтрацию по величине разницы м/у атласом и найденным 
-  #       mask_false_wl = np.abs(unm_lambda_o - unm_lmb_o) < wavelength_tolerance
-    all_pixels = np.array(matched_pixels + unmatched)
-    all_wavelengths = np.array(wavelengths + unm_atlas_lmb)
-    sort_indices = np.argsort(all_pixels)
+        tracked_pixels = []
+        tracked_wavelengths = []
 
-    ref_model_current = fit_dispersion_poly(all_pixels[sort_indices], all_wavelengths[sort_indices], poly_degree)
-    ref_coeffs_current = ref_model_current.c
-    residuals_ref = [sorted(all_wavelengths)[i] - ref_model_current(sorted(all_pixels)[i]) for i in range(len(all_pixels))]
-    rms_ref = np.sqrt(np.mean(np.array(residuals_ref)**2))
-    
-    logger.info(f"  В спектре найдено {len(all_wavelengths)} линий атласа ThAr для сопоставления")
-    logger.info(f"  Опорный срез: RMS={rms_ref:.4f} Å, {len(all_wavelengths)} линий")
-    
-    # Сохранить откалиброванный опорный срез
-    all_slices[str(reference_order)] = {
-        'model': ref_coeffs_current.tolist(),
-        'model_degree': poly_degree,
-        'rms_angstrom': float(rms_ref),
-        'rms_pixels': float(rms_ref / 0.12),
-        'n_lines': len(all_pixels),
-        'quality': 'excellent' if rms_ref <= rms_excellent else ('good' if rms_ref <= rms_good else 'warning'),
-        'is_reference': True,
-        'drift_from_template_pixels': None,
-        'calib_points':{float(pixel): float(wavelength) for pixel, wavelength in zip(all_pixels[sort_indices], all_wavelengths[sort_indices])},
-        'all_peaks': ref_all_peaks.tolist() if isinstance(ref_all_peaks, np.ndarray) else list(ref_all_peaks)
-    }
-#===============================
-    if compare_template:
-        thar_dir = thar_file.parent
-        # Автоматически выбираем первый ThAr из reference_solution
-        template_filename = reference_solution.get('thar_file')
-        template_path = thar_dir / template_filename
-        
-        with fits.open(template_path) as hdut:
-                templ_data = hdut[0].data
-                header = hdut[0].header
-                templ_data = np.maximum(templ_data,1e-6)
-        
-        x_coords_templ, flux_templ = extract_order_summed(templ_data, trace_data, reference_order)
-        
-        if plt.fignum_exists(1):
-            plt.close(1)
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 8), num=1)
-        fig.canvas.manager.window.move(1920, 100)
+        for x0, wl in zip(ref_x_pts, ref_wls):
+            x_guess = x0 + drift
+            c = gauss_center(current_slices[s_idx], x_guess, fit_half=8, sigma_max=4.5)
+            if c is not None and abs(c - x_guess) <= 6.0:
+                tracked_pixels.append(float(c))
+                tracked_wavelengths.append(float(wl))
 
-        pix_template, = ax1.plot(x_coords_templ, flux_templ,'b-')
-        pix1, = ax1.plot(x_coords_ref, flux_ref,'r--')
-    # plt.vlines(x=ref_wls_interactive, ymin=0,ymax=11000,ls=':',colors='red')
-        ax1.set_xlim(1285,1389)
+        if len(tracked_pixels) < poly_degree + 1:
+            logger.warning(f"  Срез {order_num}: мало отождествленных линий ({len(tracked_pixels)}), снижаем степень полинома")
+            deg = max(2, len(tracked_pixels) - 1)
+        else:
+            deg = poly_degree
 
-        ref_model_template = np.poly1d(reference_solution['model'])
+        tracked_pixels = np.array(tracked_pixels, dtype=np.float64)
+        tracked_wavelengths = np.array(tracked_wavelengths, dtype=np.float64)
+        sort_idx = np.argsort(tracked_pixels)
+        tracked_pixels = tracked_pixels[sort_idx]
+        tracked_wavelengths = tracked_wavelengths[sort_idx]
 
-        wl_template, = ax2.plot(ref_model_template(x_coords_templ), flux_templ,'b-')   
-        wl_ref, = ax2.plot(ref_model_current(x_coords_ref),flux_ref, 'r-')
-        ax2.set_xlim(4410,4480)
-        plt.tight_layout()
-        plt.draw()
-        plt.pause(0.1)
- #==========================   
-    # Использовать ОБНОВЛЁННЫЕ длины волн для остальных срезов
-    ref_wls = all_wavelengths[sort_indices]
-    logger.info(f"  Обновлённые ref_wls: {len(ref_wls)} линий")
+        disp_model = fit_dispersion_poly(tracked_pixels, tracked_wavelengths, deg)
+        coeffs = disp_model.c
+        residuals = tracked_wavelengths - disp_model(tracked_pixels)
+        rms = float(np.sqrt(np.mean(residuals ** 2)))
+        rms_pix = rms / 0.12
 
-    # Калибруем остальные срезы (используем те же peak_params)
-    for order_num in range(1, 15):
-        if order_num == reference_order:
-            continue  # Уже добавлен
-        
-        logger.info(f"\nКалибровка среза {order_num}...")
-        
-        # Извлечь спектр
-        x_coords, flux = extract_order_summed(thar_data, trace_data, order_num)
-        # Тесты с визуализацией
-#        fig1d = None
-#        ax1d = None
-#        fig1d, ax1d = plot_extracted_spectrum(x_coords, flux, order_num, ax=ax1d)
-        if x_coords is None:
-            logger.warning(f"  Пропуск среза {order_num}: не удалось извлечь")
-            continue
-        
-        # Найти пики
-        found_peaks = find_peaks_for_order(x_coords, flux, peak_params)
- #       found_peaks = find_and_plot_lines(x_coords, flux,ax1d, **peak_params)
- #       plt.vlines(x=pixels_ref, ymin=0,ymax=1500,ls=':')
-        
-        if len(found_peaks) < 6:
-            logger.warning(f"  Пропуск среза {order_num}: мало пиков ({len(found_peaks)})")
-            continue
-        
-        matched_pairs_o, unmatched_o = match_peaks(found_peaks, all_slices[str(reference_order)]['calib_points'], 3)
-        pixls = [pair['found_pixel'] for pair in matched_pairs_o]
-        wavelengths = [pair['wavelength'] for pair in matched_pairs_o]
-        disp_model_o = fit_dispersion_poly(pixls, wavelengths, poly_degree)
-        unm_lambda_o = np.array(disp_model_o(unmatched_o))
-        unm_lmb_o = [find_nearest_line(l, ref_wls_full) for l in unm_lambda_o]
-  #     Добавить фильтрацию по величине разницы м/у атласом и найденным 
-  #       mask_false_wl = np.abs(unm_lambda_o - unm_lmb_o) < wavelength_tolerance
-
-        # Сопоставить с интерактивно найденными точками, используя ОБНОВЛЁННУЮ модель
-        # matched_pairs = []
-        # for peak_pixel in found_peaks:
-        #     pred_lambda = ref_model_current(peak_pixel)  # Используем НОВУЮ модель!
-        #     atlas_lambda = find_nearest_line(pred_lambda, ref_wls)
-            
-        #     if atlas_lambda is not None:
-        #         if abs(atlas_lambda - pred_lambda) < wavelength_tolerance:
-        #             matched_pairs.append((peak_pixel, atlas_lambda))
-    
-        # if len(matched_pairs) < 5:
-        #     logger.warning(f"  Пропуск среза {order_num}: мало сопоставлений ({len(matched_pairs)})")
-        #     continue
-
-    #    plt.figure(2)
-        # ref_sp, = plt.plot(ref_model_current(x_coords), flux)
-        # plt.draw()
-        # input("check plots") 
-        # ref_sp.remove()
-    #    plt.vlines(x=[lmb[1] for lmb in matched_pairs], ymin=0,ymax=1100,ls=':',colors='red')
-    #    plt.vlines(x=ref_model_current(found_peaks), ymin=0,ymax=1200,colors='green')
-    #    plt.tight_layout()
-
-               
-        # Подогнать полином
-
-        pixels_o = np.array(pixls + unmatched_o)
-        wavelengths_o = np.array(wavelengths + unm_lmb_o)
-        sort_indices_o = np.argsort(pixels_o)
-        disp_model_o = fit_dispersion_poly(pixels_o[sort_indices_o], wavelengths_o[sort_indices_o], poly_degree)
-        coeffs_o = disp_model_o.c
-        # Вычислить RMS
-        residuals_o = [sorted(wavelengths_o)[i] - disp_model_o(sorted(pixels_o)[i]) for i in range(len(pixels_o))]
-        rms_o = np.sqrt(np.mean(np.array(residuals_o)**2))
-        rms_pix_o = rms_o / 0.12  # Приблизительная дисперсия
-        
-        # Определить качество
-        if rms_o <= rms_excellent:
+        if rms <= rms_excellent:
             quality = 'excellent'
             symbol = '✅'
-        elif rms_o <= rms_good:
+        elif rms <= rms_good:
             quality = 'good'
             symbol = '✓'
-        elif rms_o <= rms_warning:
+        elif rms <= rms_warning:
             quality = 'warning'
             symbol = '⚠'
         else:
             quality = 'critical'
             symbol = '✗'
-      
-        # Логировать
-        log_func = logger.info if quality in ['excellent', 'good'] else logger.warning
-        log_func(f"  Срез {order_num}: RMS={rms_o:.4f} Å ({rms_pix_o:.3f} пикс), "
-                f"{len(wavelengths_o)} линий, качество: {quality} {symbol}")
-        
-        # Сохранить результат
+
+        logger.info(f"  Срез {order_num:2d}: RMS={rms:.4f} Å ({rms_pix:.3f} px), дрейф={drift:+.2f} px, {len(tracked_pixels)}/{len(marks)} линий {symbol}")
+
         all_slices[str(order_num)] = {
-            'model': coeffs_o.tolist(),
-            'model_degree': poly_degree,
-            'rms_angstrom': float(rms_o),
-            'rms_pixels': float(rms_pix_o),
-            'n_lines': len(wavelengths_o),
+            'model': coeffs.tolist(),
+            'model_degree': int(deg),
+            'rms_angstrom': float(rms),
+            'rms_pixels': float(rms_pix),
+            'n_lines': len(tracked_pixels),
             'quality': quality,
-            'is_reference': False,
-            'drift_from_template_pixels': None,
-            'calib_points': {float(pixel): float(wavelength) for pixel, wavelength in zip(pixels_o[sort_indices_o], wavelengths_o[sort_indices_o])}
+            'is_reference': (order_num == reference_order),
+            'drift_from_template_pixels': float(drift),
+            'calib_points': {str(float(px)): float(wl) for px, wl in zip(tracked_pixels, tracked_wavelengths)},
+            'all_peaks': tracked_pixels.tolist()
         }
-    
-    # Формируем полное решение
-    import datetime
+
     full_solution = {
-        'thar_file': str(thar_file.name),
+        'thar_file': thar_file.name,
         'reference_order': reference_order,
         'poly_degree': poly_degree,
         'slices': all_slices
     }
-    
-    logger.info("\n" + "="*80)
-    logger.info(f"Откалибровано срезов: {len(all_slices)}/14")
-    logger.info("="*80)
-    
-    return full_solution
 
+    logger.info(f"\n✓ Откалибровано срезов: {len(all_slices)}/14")
+    return full_solution
 
 # =============================================================================
 # ВИЗУАЛИЗАЦИЯ
@@ -681,7 +831,7 @@ def visualize_all_slices_calibration(calibration_data: dict, output_file: Path) 
         ref_shift_points_x = []
         ref_shift_points_y = []
         
-        if 'calib_points' in ref_slice and 'calib_points' in reference_solution:
+        if reference_solution and 'calib_points' in ref_slice and 'calib_points' in reference_solution:
             ref_calib_points = ref_slice['calib_points']  # {пиксель: длина_волны}
             ref_solution_points = reference_solution['calib_points']  # {пиксель: длина_волны}
             
@@ -708,8 +858,11 @@ def visualize_all_slices_calibration(calibration_data: dict, output_file: Path) 
             
             # Вычислить полином сдвига
             if order_num == reference_order:
-                # Опорный срез: сдвиг относительно референсного решения
-                shift_values = ref_model(x) - np.poly1d(reference_solution['model'])(x)
+                # Опорный срез: сдвиг относительно референсного решения если оно передано
+                if reference_solution and 'model' in reference_solution:
+                    shift_values = ref_model(x) - np.poly1d(reference_solution['model'])(x)
+                else:
+                    shift_values = np.zeros_like(x)
                 
                 # Отождествленные точки (круги) - сдвиги относительно референсного
                 shift_points_x = ref_shift_points_x
@@ -720,9 +873,11 @@ def visualize_all_slices_calibration(calibration_data: dict, output_file: Path) 
                 all_peaks_y = []
                 if 'all_peaks' in ref_slice:
                     all_peaks_x = ref_slice['all_peaks']
-                    # Для всех найденных пиков вычисляем сдвиг относительно референсного
-                    all_peaks_y = [ref_model(pixel) - np.poly1d(reference_solution['model'])(pixel) 
-                                  for pixel in all_peaks_x]
+                    if reference_solution and 'model' in reference_solution:
+                        all_peaks_y = [ref_model(pixel) - np.poly1d(reference_solution['model'])(pixel) 
+                                      for pixel in all_peaks_x]
+                    else:
+                        all_peaks_y = [0.0 for _ in all_peaks_x]
             else:
                 # Сдвиг: Δλ(pixel) = λ_slice(pixel) - λ_ref(pixel)
                 shift_values = slice_model(x) - ref_model(x)

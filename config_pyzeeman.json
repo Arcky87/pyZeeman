@@ -28,6 +28,7 @@
   		}
   },
   "tracing": {
+	"flat_prominence": 50,
 	"n_points_for_fit": 10,
 	"smooth": true,
 	"smooth_sigma": 1.0,
@@ -41,6 +42,11 @@
         }
   },
   "calibration": {
+    "interactive_peak_detection": {
+      "prominence_sigma": 5.0,
+      "width_range": [1.0, 7.5],
+      "distance_pixels": 10
+    },
     "peak_detection": {
       "prominence_sigma": 12.0,
       "width_range": [1.1, 4.5],
